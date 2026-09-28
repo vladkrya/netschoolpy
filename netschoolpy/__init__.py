@@ -12,6 +12,8 @@ from .exceptions import (
 )
 from .models import (
     AssignedMark,
+    AssignmentDetails,
+    Teacher,
     LoginMethods,
     SPECIAL_MARK_DESCRIPTIONS,
     ReportingPeriod,
@@ -24,7 +26,7 @@ from .models import (
 )
 from .regions import REGIONS, get_url, list_regions
 
-__version__ = "8.0.2"
+__version__ = "8.1.0"
 
 __all__ = [
     "NetSchool",
@@ -32,6 +34,8 @@ __all__ = [
     "get_login_methods",
     "get_total_marks",
     "AssignedMark",
+    "AssignmentDetails",
+    "Teacher",
     "LoginMethods",
     "SPECIAL_MARK_DESCRIPTIONS",
     "ReportingPeriod",

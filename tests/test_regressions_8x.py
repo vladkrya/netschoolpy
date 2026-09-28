@@ -143,3 +143,28 @@ async def test_event_listener_yields_announcements_and_marks():
     await events.aclose()
     assert first.author == "Иванова А. А."
     assert (second.subject, second.mark, second.assignment_name) == ("Физика", "5", "Законы Ньютона")
+
+
+def test_assignment_details_give_teacher():
+    from netschoolpy.models import AssignmentDetails
+
+    details = AssignmentDetails.from_raw({
+        "id": 34645173,
+        "assignmentName": "---Не указана---",
+        "subjectGroup": {"id": 917110, "name": "9б/Алгебра"},
+        "teachers": [{"id": 1, "name": "Циркулев Аркадий Гипотенузович"}],
+        "weight": 1,
+        "date": "2026-09-23T00:00:00",
+        "attachments": [{"attachmentGuid": "f1a3", "originalFileName": "Домашняя работа.docx"}],
+    })
+    assert details.teacher == "Циркулев Аркадий Гипотенузович"
+    assert details.subject_group == "9б/Алгебра"
+    assert details.attachments[0].name == "Домашняя работа.docx"
+
+
+def test_lesson_keeps_classmeeting_and_diary_keeps_class():
+    raw = dict(DIARY, className="9б", termName="1 четверть")
+    raw["weekDays"][0]["lessons"][0].update(classmeetingId=37712325, isDistanceLesson=False, relay=1)
+    diary = Diary.from_raw(raw)
+    assert (diary.class_name, diary.term_name) == ("9б", "1 четверть")
+    assert diary.days[0].lessons[0].classmeeting_id == 37712325

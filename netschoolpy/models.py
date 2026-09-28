@@ -108,7 +108,8 @@ class Attachment(_Model):
         # в почтовых вложениях — в "name".
         name = data.get("originalFileName") or data.get("name") or ""
         return cls(
-            id=data["id"],
+            # В карточке задания у вложения нет id — только attachmentGuid.
+            id=data.get("id") or 0,
             name=name,
             description=data.get("description") or "",
         )
@@ -292,6 +293,50 @@ class Assignment(_Model):
         )
 
 
+class Teacher(_Model):
+    id: int = 0
+    name: str = ""
+
+
+class AssignmentDetails(_Model):
+    """Карточка задания (``student/diary/assigns/{id}``).
+
+    Единственное место, где SGO отдаёт учителя: в самом дневнике его нет.
+    """
+
+    id: int
+    name: str = ""
+    subject_group: str = ""
+    teachers: List[Teacher] = Field(default_factory=list)
+    weight: int = 1
+    date: Optional[datetime.date] = None
+    description: str = ""
+    attachments: List[Attachment] = Field(default_factory=list)
+
+    @property
+    def teacher(self) -> str:
+        """ФИО учителей через запятую — обычно один."""
+        return ", ".join(t.name for t in self.teachers if t.name)
+
+    @classmethod
+    def from_raw(cls, data: dict) -> AssignmentDetails:
+        group = data.get("subjectGroup") or {}
+        return cls(
+            id=data["id"],
+            name=data.get("assignmentName") or "",
+            subject_group=group.get("name") or "",
+            teachers=[
+                Teacher(id=t.get("id") or 0, name=t.get("name") or "")
+                for t in data.get("teachers") or []
+                if isinstance(t, dict)
+            ],
+            weight=data.get("weight") or 1,
+            date=_parse_date(data["date"]) if data.get("date") else None,
+            description=data.get("description") or "",
+            attachments=[Attachment.from_raw(a) for a in data.get("attachments") or []],
+        )
+
+
 # ──────────────────────────── Уроки ──────────────────────────────
 
 class Lesson(_Model):
@@ -304,6 +349,11 @@ class Lesson(_Model):
     number: int = 0
     subject: str = ""
     assignments: List[Assignment] = Field(default_factory=list)
+    # Идентификатор урока в SGO: по нему связаны задания («classMeetingId»).
+    classmeeting_id: Optional[int] = None
+    is_distance: bool = False
+    # Номер смены.
+    relay: Optional[int] = None
 
     @classmethod
     def from_raw(cls, data: dict, type_mapping: Dict[int, dict] | None = None) -> Lesson:
@@ -314,6 +364,9 @@ class Lesson(_Model):
             room=data.get("room") or "",
             number=data["number"],
             subject=data.get("subjectName", ""),
+            classmeeting_id=data.get("classmeetingId"),
+            is_distance=bool(data.get("isDistanceLesson", False)),
+            relay=data.get("relay"),
             assignments=[
                 Assignment.from_raw(a, type_mapping)
                 for a in data.get("assignments", [])
@@ -407,6 +460,9 @@ class Diary(_Model):
     schedule: List[Day] = Field(
         default_factory=list, validation_alias=AliasChoices("schedule", "days")
     )
+    # «9б», «1 четверть» — приходят вместе с неделей.
+    class_name: str = ""
+    term_name: str = ""
 
     @property
     def days(self) -> List[Day]:
@@ -419,6 +475,8 @@ class Diary(_Model):
             start=_parse_date(data["weekStart"]),
             end=_parse_date(data["weekEnd"]),
             schedule=[Day.from_raw(d, type_mapping) for d in data.get("weekDays", [])],
+            class_name=data.get("className") or "",
+            term_name=data.get("termName") or "",
         )
 
     def to_ical(self) -> str:

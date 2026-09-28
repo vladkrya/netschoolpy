@@ -27,6 +27,7 @@ from netschoolpy.models import (
     Announcement,
     AssignedMark,
     Assignment,
+    AssignmentDetails,
     Attachment,
     Diary,
     LoginMethods,
@@ -2197,6 +2198,27 @@ class NetSchool:
         return [
             Attachment.from_raw(a) for a in items[0].get("attachments", [])
         ]
+
+    async def assignment_details(
+        self,
+        assignment_id: int,
+        *,
+        timeout: int | None = None,
+    ) -> AssignmentDetails:
+        """Карточка задания: учитель, группа предмета, описание, вложения.
+
+        Учителя урока дневник не отдаёт — только эта карточка. Одного задания
+        на предмет достаточно, чтобы узнать учителя::
+
+            details = await ns.assignment_details(lesson.assignments[0].id)
+            print(details.teacher)
+        """
+        resp = await self._authed_get(
+            f"student/diary/assigns/{assignment_id}",
+            params={"studentId": self._student_id},
+            timeout=timeout,
+        )
+        return AssignmentDetails.from_raw(resp.json())
 
     async def school_info(self, *, timeout: int | None = None) -> School:
         """Получить информацию о школе."""
