@@ -62,6 +62,30 @@ _ESIA_API_HEADERS: dict[str, str] = {
 }
 
 
+def _ask(
+    prompt: str,
+    *,
+    need: str,
+    secret: bool = False,
+    error: type[Exception] = exceptions.MFAError,
+) -> str:
+    """Спросить у человека в терминале — только если терминал есть.
+
+    Без колбэка библиотека запрашивала код через ``input()`` и на сервере:
+    под systemd это EOFError в лучшем случае, а в худшем — процесс, навсегда
+    повисший в ожидании ввода.
+    """
+    import sys
+
+    if not (sys.stdin and sys.stdin.isatty()):
+        raise error(f"Нужен {need}, но интерактивного терминала нет")
+    if secret:
+        import getpass
+
+        return getpass.getpass(prompt).strip()
+    return input(prompt).strip()
+
+
 class NetSchool:
     """Асинхронный клиент для API «Сетевого города».
 
@@ -81,12 +105,6 @@ class NetSchool:
         auto_relogin: bool = False,
         cache_ttl: float = 3600.0,
     ) -> None:
-        from netschoolpy.cache import TTLCache
-        self._http = HttpSession(url, timeout=timeout, proxy=proxy)
-        self._proxy = proxy
-        self._auto_relogin = auto_relogin
-        self._cache = TTLCache(default_ttl=cache_ttl)
-        self._last_login_args: dict | None = None
         """
         :param url: URL сервера Сетевой Город.
         :param timeout: Таймаут HTTP-запросов в секундах.
@@ -94,8 +112,17 @@ class NetSchool:
             ``socks5://127.0.0.1:1080``. Полезно для серверов, которые
             блокируют datacenter IP (можно использовать с VLESS/xray).
             При указании Tor-fallback не применяется.
+        :param auto_relogin: Зарезервировано. Повторный вход при 401 после
+            :meth:`login` выполняется всегда; после :meth:`import_session`
+            войти заново нечем — ловите :class:`SessionExpired`.
+        :param cache_ttl: Время жизни внутреннего кэша (``self._cache``).
         """
+        from netschoolpy.cache import TTLCache
+
         self._http = HttpSession(url, timeout=timeout, proxy=proxy)
+        self._proxy = proxy
+        self._auto_relogin = auto_relogin
+        self._cache = TTLCache(default_ttl=cache_ttl)
 
         self._student_id: int = -1
         self._year_id: int = -1
@@ -608,10 +635,9 @@ class NetSchool:
             интерактивный выбор через ``input()``.
         """
         if esia_login is None:
-            esia_login = input("Логин Госуслуг (телефон/email/СНИЛС): ").strip()
+            esia_login = _ask("Логин Госуслуг (телефон/email/СНИЛС): ", need="логин Госуслуг")
         if esia_password is None:
-            import getpass
-            esia_password = getpass.getpass("Пароль Госуслуг: ").strip()
+            esia_password = _ask("Пароль Госуслуг: ", need="пароль Госуслуг", secret=True)
 
         if not esia_login or not esia_password:
             raise exceptions.LoginError("Логин и пароль не могут быть пустыми")
@@ -1050,7 +1076,11 @@ class NetSchool:
         for i, lbl in enumerate(labels, 1):
             log.info("  %d. %s", i, lbl)
         while True:
-            raw = input(f"Выберите организацию (1-{len(users)}): ").strip()
+            raw = _ask(
+                f"Выберите организацию (1-{len(users)}): ",
+                need="выбор организации (передайте user_callback)",
+                error=exceptions.LoginError,
+            )
             if raw.isdigit() and 1 <= int(raw) <= len(users):
                 return users[int(raw) - 1]
             log.warning("Некорректный ввод, попробуйте снова.")
@@ -1120,7 +1150,7 @@ class NetSchool:
                 else:
                     code = otp_callback(mfa_type, otp_details)
             else:
-                code = input(prompt).strip()
+                code = _ask(prompt, need="код подтверждения (передайте otp_callback)")
             if not code:
                 raise exceptions.MFAError("Код подтверждения не введён")
 
@@ -1325,7 +1355,7 @@ class NetSchool:
             else:
                 code = otp_callback("SMS", anomaly_details)
         else:
-            code = input("Введите код подтверждения: ").strip()
+            code = _ask("Введите код подтверждения: ", need="код подтверждения (передайте otp_callback)")
         if not code:
             raise exceptions.MFAError("Код подтверждения не введён")
 
@@ -1644,6 +1674,13 @@ class NetSchool:
                 "student/diary/init", timeout=timeout,
             )
             self._init_students(resp.json())
+        except (exceptions.ServerUnavailable, httpx.TransportError) as e:
+            # Сервер не ответил — о сессии это ничего не говорит. Раньше и это
+            # превращалось в SessionExpired, и вызывающий код выбрасывал
+            # живую сессию (для Госуслуг — ценой нового входа с кодом).
+            raise exceptions.ServerUnavailable(
+                f"Не удалось проверить сессию: сервер недоступен ({e})"
+            ) from e
         except Exception as e:
             raise exceptions.SessionExpired(
                 f"Сессия истекла или невалидна: {e}"

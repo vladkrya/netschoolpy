@@ -7,7 +7,7 @@ from netschoolpy.regions import REGIONS, get_url, list_regions
 
 class TestREGIONS:
     def test_count(self) -> None:
-        assert len(REGIONS) == 26
+        assert len(REGIONS) == 27
 
     def test_all_urls_have_scheme(self) -> None:
         for name, url in REGIONS.items():

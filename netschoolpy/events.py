@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from datetime import datetime
 from typing import Any, AsyncGenerator, Dict, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
+
+log = logging.getLogger(__name__)
 
 
 class Event(BaseModel):
@@ -52,8 +56,6 @@ class SignalREventListener:
         self._client = client
 
     async def listen(self, poll_interval: float = 10.0) -> AsyncGenerator[Event, None]:
-        import asyncio
-
         seen_announcements: set[int] = set()
         seen_marks: set[str] = set()
 
@@ -67,27 +69,33 @@ class SignalREventListener:
                             yield NewAnnouncementEvent(
                                 title=ann.title,
                                 description=ann.description,
-                                author=ann.author,
-                                raw_payload=ann.model_dump(),
+                                # author — объект Author, а событию нужна строка:
+                                # раньше здесь падала валидация, и ошибку глотал
+                                # except, так что объявления не приходили вовсе.
+                                author=ann.author.full_name or ann.author.nickname or None,
+                                raw_payload=ann.model_dump(mode="json"),
                             )
+                except asyncio.CancelledError:
+                    raise
                 except Exception:
-                    pass
+                    log.warning("Не удалось получить объявления", exc_info=True)
 
                 try:
                     assigned = await self._client.assigned_marks()
                     for m in assigned:
-                        key = f"{m.subject}:{m.assignment_name}:{m.mark}:{m.date}"
+                        key = f"{m.subject}:{m.topic}:{m.mark_text}:{m.lesson_date}"
                         if key not in seen_marks:
                             seen_marks.add(key)
                             yield NewMarkEvent(
                                 subject=m.subject,
-                                mark=m.mark,
-                                weight=m.weight,
-                                assignment_name=m.assignment_name,
-                                raw_payload=m.model_dump(),
+                                mark=m.mark_text,
+                                assignment_name=m.topic,
+                                raw_payload=m.model_dump(mode="json"),
                             )
+                except asyncio.CancelledError:
+                    raise
                 except Exception:
-                    pass
+                    log.warning("Не удалось получить оценки", exc_info=True)
 
                 await asyncio.sleep(poll_interval)
             except asyncio.CancelledError:
