@@ -370,3 +370,23 @@ async def test_upload_rejects_unexpected_answer():
     await ns.login_with_token("TOKEN")
     with pytest.raises(Exception, match="неожиданный"):
         await ns.upload_attachment("a.txt", b"x")
+
+
+async def test_diary_keeps_lesson_order_of_assignments_whatever_the_server_order():
+    # Сервер отдаёт задания в меняющемся порядке; порядок в дневнике должен
+    # быть один и тот же — по списку заданий урока.
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/mobile/assignments":
+            return httpx.Response(200, json=list(reversed(ASSIGNMENTS)))
+        return _api(request)
+
+    ns = MobileNetSchool(SITE, transport=httpx.MockTransport(handler))
+    await ns.login_with_token("TOKEN")
+    reversed_order = await ns.diary(start=datetime.date(2026, 9, 28))
+    normal = await (await _client()).diary(start=datetime.date(2026, 9, 28))
+
+    def ids(diary):
+        return [[a.id for a in lesson.assignments] for day in diary.schedule for lesson in day.lessons]
+
+    assert ids(reversed_order) == ids(normal)
+    assert [10, 11] in ids(normal)

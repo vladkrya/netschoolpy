@@ -910,8 +910,12 @@ class MobileNetSchool:
         meetings = await self.classmeetings(start, end)
         ids = [a for m in meetings for a in m.get("assignmentId") or []]
         raw_assignments = await self.assignments(ids) if ids else []
+        # Порядок заданий внутри урока задаём сами — по списку урока. Сервер
+        # отдаёт их в порядке ответа, который меняется от запроса к запросу, а
+        # порядковый номер задания входит в ключ оценки у потребителей.
+        position = {a: i for m in meetings for i, a in enumerate(m.get("assignmentId") or [])}
         by_meeting: Dict[int, List[dict]] = {}
-        for item in raw_assignments:
+        for item in sorted(raw_assignments, key=lambda a: position.get(a.get("assignmentId"), 1 << 30)):
             by_meeting.setdefault(item.get("classmeetingId"), []).append(item)
 
         attachments: Dict[int, List[Attachment]] = {}
