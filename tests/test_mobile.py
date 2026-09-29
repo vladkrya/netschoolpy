@@ -317,3 +317,56 @@ async def test_mail_send_needs_recipient_and_reports_errors():
         await ns.mail_send("Тема", "Текст", [])
     with pytest.raises(Exception, match="403"):
         await ns.mail_send("Тема", "Текст", ["a"])
+
+
+async def test_mail_send_uploads_files_first_and_attaches_ids():
+    log = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if request.method == "POST" and path == "/api/mobile/attachments":
+            assert request.url.params["userId"] == "42"
+            assert request.headers["content-type"].startswith("multipart/form-data")
+            body = request.content
+            log.append(("upload", b'name="file"' in body, b"%D0%A4" in body, b"PNGDATA" in body))
+            return httpx.Response(200, json=900 + len(log))
+        if request.method == "POST" and path == "/api/mobile/mail/messages":
+            log.append(("send", json.loads(request.content)["fileAttachmentIds"]))
+            return httpx.Response(200, json={"messageId": 1})
+        return _api(request)
+
+    ns = MobileNetSchool(SITE, transport=httpx.MockTransport(handler))
+    await ns.login_with_token("TOKEN")
+
+    await ns.mail_send("Тема", "Текст", ["a"], attachments=[("Фото.png", b"PNGDATA"), ("b.txt", b"PNGDATA")])
+
+    assert log == [("upload", True, True, True), ("upload", True, False, True), ("send", [901, 902])]
+
+
+async def test_failed_upload_stops_the_mail():
+    sent = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/mobile/attachments":
+            return httpx.Response(413, text="too large")
+        if request.method == "POST":
+            sent.append(1)
+        return _api(request)
+
+    ns = MobileNetSchool(SITE, transport=httpx.MockTransport(handler))
+    await ns.login_with_token("TOKEN")
+    with pytest.raises(Exception, match="413"):
+        await ns.mail_send("Тема", "Текст", ["a"], attachments=[("a.bin", b"x")])
+    assert sent == []
+
+
+async def test_upload_rejects_unexpected_answer():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/mobile/attachments":
+            return httpx.Response(200, json={"oops": 1})
+        return _api(request)
+
+    ns = MobileNetSchool(SITE, transport=httpx.MockTransport(handler))
+    await ns.login_with_token("TOKEN")
+    with pytest.raises(Exception, match="неожиданный"):
+        await ns.upload_attachment("a.txt", b"x")

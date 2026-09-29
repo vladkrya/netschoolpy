@@ -34,12 +34,14 @@ from __future__ import annotations
 import datetime
 import json
 import logging
+import mimetypes
 import os
 from collections.abc import Iterable, Sequence
 from datetime import date, timedelta
 from hashlib import md5
 from io import BytesIO
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
+from urllib.parse import quote
 
 import httpx
 
@@ -631,10 +633,15 @@ class MobileNetSchool:
     # ── транспорт ────────────────────────────────────────────
 
     async def _request(
-        self, method: str, path: str, params: Optional[Params] = None, *, json_body: Any = None,
+        self, method: str, path: str, params: Optional[Params] = None, *,
+        json_body: Any = None, files: Any = None,
     ) -> httpx.Response:
         query: Params = [*(params or []), ("lng", "ru"), ("appVersion", APP_VERSION)]
-        extra = {"json": json_body} if json_body is not None else {}
+        extra: Dict[str, Any] = {}
+        if json_body is not None:
+            extra["json"] = json_body
+        if files is not None:
+            extra["files"] = files
         return await _send(self._http, method, path, params=query, **extra)
 
     async def _get(self, path: str, params: Optional[Params] = None) -> Any:
@@ -796,6 +803,25 @@ class MobileNetSchool:
         response = await self._request("POST", f"/mail/messages/{message_id}/read", [("userId", self._user_id)])
         return _json(response, "mail/messages/{id}/read")
 
+    async def upload_attachment(
+        self, name: str, data: bytes, content_type: Optional[str] = None,
+    ) -> int:
+        """Загрузить файл для письма: ``POST /attachments?userId=…`` → id вложения.
+
+        Как в приложении: multipart-поле ``file``, имя файла в URL-кодировке.
+        Id кладётся в ``fileAttachmentIds`` при отправке (:meth:`mail_send_raw`).
+        """
+        mime = content_type or mimetypes.guess_type(name)[0] or "application/octet-stream"
+        response = await self._request(
+            "POST", "/attachments", [("userId", self._user_id)],
+            files={"file": (quote(name, safe=""), data, mime)},
+        )
+        result = _json(response, "attachments (upload)")
+        try:
+            return int(result)
+        except (TypeError, ValueError) as exc:
+            raise exceptions.NetSchoolError(f"attachments (upload): неожиданный ответ {result!r}") from exc
+
     async def mail_send_raw(
         self,
         subject: str,
@@ -804,12 +830,13 @@ class MobileNetSchool:
         *,
         cc: Sequence[str] = (),
         bcc: Sequence[str] = (),
+        attachment_ids: Sequence[int] = (),
     ) -> dict:
         """Отправить письмо: ``POST /mail/messages`` (как «Отправить» в приложении).
 
         ``to``/``cc``/``bcc`` — идентификаторы получателей из адресной книги
-        (``MailRecipient.id``). Ответ: ``{messageId, author, dateSent}``.
-        Вложения пока не поддерживаются (``fileAttachmentIds`` пуст).
+        (``MailRecipient.id``), ``attachment_ids`` — из :meth:`upload_attachment`.
+        Ответ: ``{messageId, author, dateSent}``.
         """
         response = await self._request(
             "POST",
@@ -823,7 +850,7 @@ class MobileNetSchool:
                 "notify": True,
                 "draft": False,
                 "authorId": self._user_id,
-                "fileAttachmentIds": [],
+                "fileAttachmentIds": list(attachment_ids),
             },
         )
         return _json(response, "mail/messages (send)")
@@ -993,11 +1020,25 @@ class MobileNetSchool:
             walk(group)
         return list(seen.values())
 
-    async def mail_send(self, subject: str, text: str, to: List[str], *, timeout: Optional[float] = None) -> None:
-        """Отправить письмо. Приложение дописывает к тексту подпись — мы не дописываем."""
+    async def mail_send(
+        self,
+        subject: str,
+        text: str,
+        to: List[str],
+        *,
+        attachments: Sequence[Tuple[str, bytes]] = (),
+        timeout: Optional[float] = None,
+    ) -> None:
+        """Отправить письмо, при необходимости с файлами ``[(имя, содержимое), …]``.
+
+        Приложение дописывает к тексту подпись — мы не дописываем. Файлы
+        загружаются до отправки; если загрузка одного из них не удалась,
+        письмо не уходит.
+        """
         if not to:
             raise exceptions.NetSchoolError("Не указан получатель письма")
-        await self.mail_send_raw(subject, text, to)
+        ids = [await self.upload_attachment(name, data) for name, data in attachments]
+        await self.mail_send_raw(subject, text, to, attachment_ids=ids)
 
     async def mobile_token(self, *, client_secret: Optional[str] = None) -> MobileToken:
         if self._token is None:
