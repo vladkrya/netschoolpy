@@ -228,3 +228,54 @@ async def test_web_client_mobile_token_uses_pincode(monkeypatch):
     assert token.access_token == "T"
     assert seen == {"path": "mysettings/mobile/pincode", "code": "555"}
     await ns._http.close()
+
+
+async def test_refresh_extends_token_and_keeps_old_refresh_token(monkeypatch):
+    monkeypatch.setenv("NETSCHOOL_MOBILE_CLIENT_SECRET", "cs")
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/connect/token":
+            form = _form(request)
+            seen.append(form)
+            # Новый refresh_token сервер не выдал — прежний должен сохраниться.
+            return httpx.Response(200, json={"access_token": "NEW", "expires_in": 5184000})
+        return _api(request)
+
+    ns = MobileNetSchool(SITE, transport=httpx.MockTransport(handler))
+    await ns.login_with_token(MobileToken(
+        access_token="TOKEN", refresh_token="R1",
+        expires_at=datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=1),
+    ))
+    assert ns.token.expires_soon(datetime.timedelta(days=3))
+
+    token = await ns.refresh()
+
+    assert seen[0]["grant_type"] == "refresh_token" and seen[0]["refresh_token"] == "R1"
+    assert token.access_token == "NEW" and token.refresh_token == "R1"
+    assert not token.expires_soon(datetime.timedelta(days=3))
+    assert ns._http.headers["Authorization"] == "Bearer NEW"
+    assert json.loads(ns.export_session())["refresh_token"] == "R1"
+
+
+async def test_refresh_takes_new_refresh_token_when_given(monkeypatch):
+    monkeypatch.setenv("NETSCHOOL_MOBILE_CLIENT_SECRET", "cs")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/connect/token":
+            return httpx.Response(200, json={"access_token": "NEW", "refresh_token": "R2", "expires_in": 5184000})
+        return _api(request)
+
+    ns = MobileNetSchool(SITE, transport=httpx.MockTransport(handler))
+    await ns.login_with_token(MobileToken(
+        access_token="TOKEN", refresh_token="R1",
+        expires_at=datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=1),
+    ))
+    assert (await ns.refresh()).refresh_token == "R2"
+
+
+async def test_refresh_without_refresh_token_asks_to_login_again():
+    ns = await _client()
+    ns._token = MobileToken(access_token="T", expires_at=datetime.datetime.now(datetime.timezone.utc))
+    with pytest.raises(SessionExpired):
+        await ns.refresh()

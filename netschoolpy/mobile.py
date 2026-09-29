@@ -500,10 +500,16 @@ class MobileNetSchool:
         """Продлить токен (не проверено на живом сервере — см. :func:`refresh_token`)."""
         if self._token is None or not self._token.refresh_token:
             raise exceptions.SessionExpired("Нет refresh_token — войдите заново")
+        previous = self._token.refresh_token
         token = await refresh_token(
-            self._token.refresh_token, client_secret=self._client_secret,
+            previous, client_secret=self._client_secret,
             proxy=self._proxy, timeout=self._timeout, transport=self._transport,
         )
+        if not token.refresh_token:
+            # Сервер может не выдать новый refresh_token — тогда прежний
+            # остаётся рабочим, и терять его нельзя: без него следующее
+            # продление невозможно.
+            token = token.model_copy(update={"refresh_token": previous})
         self._token = token
         self._http.headers["Authorization"] = f"Bearer {token.access_token}"
         return token

@@ -36,7 +36,7 @@ from .mobile import get_region as get_mobile_region
 from .mobile import list_regions as list_mobile_regions
 from .regions import REGIONS, get_url, list_regions
 
-__version__ = "9.0.0"
+__version__ = "9.1.0"
 
 __all__ = [
     "NetSchool",
