@@ -183,7 +183,7 @@ async with NetSchool("https://sgo.example.ru") as ns:
 
 ## Мобильное API (9.0)
 
-`MobileNetSchool` работает через API приложения NetSchool (`/api/mobile/*`). Интерфейс совместим с `NetSchool`: `diary()`, `announcements()`, `mail_list()`, `mail_read()`, `mail_recipients()`, `attachments()`, `assignment_details()`, `export_session()` / `import_session()` возвращают те же модели.
+`MobileNetSchool` работает через API приложения NetSchool (`/api/mobile/*`). Интерфейс совместим с `NetSchool`: `diary()`, `announcements()`, `mail_list()`, `mail_read()`, `mail_recipients()`, `mail_send()`, `attachments()`, `assignment_details()`, `export_session()` / `import_session()` возвращают те же модели.
 
 Чем оно лучше веб-API:
 

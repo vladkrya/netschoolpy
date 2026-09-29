@@ -630,9 +630,12 @@ class MobileNetSchool:
 
     # ── транспорт ────────────────────────────────────────────
 
-    async def _request(self, method: str, path: str, params: Optional[Params] = None) -> httpx.Response:
+    async def _request(
+        self, method: str, path: str, params: Optional[Params] = None, *, json_body: Any = None,
+    ) -> httpx.Response:
         query: Params = [*(params or []), ("lng", "ru"), ("appVersion", APP_VERSION)]
-        return await _send(self._http, method, path, params=query)
+        extra = {"json": json_body} if json_body is not None else {}
+        return await _send(self._http, method, path, params=query, **extra)
 
     async def _get(self, path: str, params: Optional[Params] = None) -> Any:
         return _json(await self._request("GET", path, params), path)
@@ -792,6 +795,38 @@ class MobileNetSchool:
         """Письмо целиком. Помечает его прочитанным, как и в приложении."""
         response = await self._request("POST", f"/mail/messages/{message_id}/read", [("userId", self._user_id)])
         return _json(response, "mail/messages/{id}/read")
+
+    async def mail_send_raw(
+        self,
+        subject: str,
+        text: str,
+        to: Sequence[str],
+        *,
+        cc: Sequence[str] = (),
+        bcc: Sequence[str] = (),
+    ) -> dict:
+        """Отправить письмо: ``POST /mail/messages`` (как «Отправить» в приложении).
+
+        ``to``/``cc``/``bcc`` — идентификаторы получателей из адресной книги
+        (``MailRecipient.id``). Ответ: ``{messageId, author, dateSent}``.
+        Вложения пока не поддерживаются (``fileAttachmentIds`` пуст).
+        """
+        response = await self._request(
+            "POST",
+            "/mail/messages",
+            json_body={
+                "to": list(to),
+                "cc": list(cc),
+                "bcc": list(bcc),
+                "text": text,
+                "subject": subject,
+                "notify": True,
+                "draft": False,
+                "authorId": self._user_id,
+                "fileAttachmentIds": [],
+            },
+        )
+        return _json(response, "mail/messages (send)")
 
     async def mail_blocked_users(self) -> List[dict]:
         return await self._get("/mail/blocked-users", [("userId", self._user_id)])
@@ -959,9 +994,10 @@ class MobileNetSchool:
         return list(seen.values())
 
     async def mail_send(self, subject: str, text: str, to: List[str], *, timeout: Optional[float] = None) -> None:
-        raise exceptions.NetSchoolError(
-            "Отправка писем через мобильное API пока не поддерживается — используйте NetSchool"
-        )
+        """Отправить письмо. Приложение дописывает к тексту подпись — мы не дописываем."""
+        if not to:
+            raise exceptions.NetSchoolError("Не указан получатель письма")
+        await self.mail_send_raw(subject, text, to)
 
     async def mobile_token(self, *, client_secret: Optional[str] = None) -> MobileToken:
         if self._token is None:

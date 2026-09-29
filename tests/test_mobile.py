@@ -279,3 +279,41 @@ async def test_refresh_without_refresh_token_asks_to_login_again():
     ns._token = MobileToken(access_token="T", expires_at=datetime.datetime.now(datetime.timezone.utc))
     with pytest.raises(SessionExpired):
         await ns.refresh()
+
+
+async def test_mail_send_posts_like_the_app():
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path == "/api/mobile/mail/messages":
+            seen.append(request)
+            return httpx.Response(200, json={"messageId": 77, "author": {"id": 42, "name": "Иванов Иван"}, "dateSent": "2026-09-29T21:00:00"})
+        return _api(request)
+
+    ns = MobileNetSchool(SITE, transport=httpx.MockTransport(handler))
+    await ns.login_with_token("TOKEN")
+
+    await ns.mail_send("Тема", "Текст", ["cmVjaXBpZW50"])
+
+    (request,) = seen
+    assert request.headers["Authorization"] == "Bearer TOKEN"
+    assert json.loads(request.content) == {
+        "to": ["cmVjaXBpZW50"], "cc": [], "bcc": [], "text": "Текст", "subject": "Тема",
+        "notify": True, "draft": False, "authorId": 42, "fileAttachmentIds": [],
+    }
+    raw = await ns.mail_send_raw("Т", "Х", ["a"], cc=["b"])
+    assert raw["messageId"] == 77
+
+
+async def test_mail_send_needs_recipient_and_reports_errors():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(403, text="forbidden")
+        return _api(request)
+
+    ns = MobileNetSchool(SITE, transport=httpx.MockTransport(handler))
+    await ns.login_with_token("TOKEN")
+    with pytest.raises(Exception, match="получател"):
+        await ns.mail_send("Тема", "Текст", [])
+    with pytest.raises(Exception, match="403"):
+        await ns.mail_send("Тема", "Текст", ["a"])
