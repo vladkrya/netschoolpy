@@ -328,7 +328,7 @@ async def test_mail_send_uploads_files_first_and_attaches_ids():
             assert request.url.params["userId"] == "42"
             assert request.headers["content-type"].startswith("multipart/form-data")
             body = request.content
-            log.append(("upload", b'name="file"' in body, b"%D0%A4" in body, b"PNGDATA" in body))
+            log.append(("upload", b'name="file"' in body, "Фото.png".encode() in body, b"PNGDATA" in body))
             return httpx.Response(200, json=900 + len(log))
         if request.method == "POST" and path == "/api/mobile/mail/messages":
             log.append(("send", json.loads(request.content)["fileAttachmentIds"]))

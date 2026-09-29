@@ -41,7 +41,6 @@ from datetime import date, timedelta
 from hashlib import md5
 from io import BytesIO
 from typing import Any, Dict, List, Optional, Tuple, Union
-from urllib.parse import quote
 
 import httpx
 
@@ -808,13 +807,15 @@ class MobileNetSchool:
     ) -> int:
         """Загрузить файл для письма: ``POST /attachments?userId=…`` → id вложения.
 
-        Как в приложении: multipart-поле ``file``, имя файла в URL-кодировке.
-        Id кладётся в ``fileAttachmentIds`` при отправке (:meth:`mail_send_raw`).
+        Multipart-поле ``file``; имя файла — обычным UTF-8. Приложение шлёт
+        его URL-кодированным (``%D0%9F…``), но сервер хранит имя как есть, и
+        получатель видел бы кракозябры: с сырым именем оно показывается
+        правильно (проверено на живом сервере). Id кладётся в ``fileAttachmentIds`` при отправке (:meth:`mail_send_raw`).
         """
         mime = content_type or mimetypes.guess_type(name)[0] or "application/octet-stream"
         response = await self._request(
             "POST", "/attachments", [("userId", self._user_id)],
-            files={"file": (quote(name, safe=""), data, mime)},
+            files={"file": (name, data, mime)},
         )
         result = _json(response, "attachments (upload)")
         try:
