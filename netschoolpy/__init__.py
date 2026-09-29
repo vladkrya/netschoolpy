@@ -24,12 +24,30 @@ from .models import (
     SubjectTotalMark,
     TotalMarksReportLine,
 )
+from .mobile import (
+    MobileNetSchool,
+    MobileRegion,
+    MobileToken,
+    exchange_code,
+    published_at,
+    refresh_token,
+)
+from .mobile import get_region as get_mobile_region
+from .mobile import list_regions as list_mobile_regions
 from .regions import REGIONS, get_url, list_regions
 
-__version__ = "8.1.0"
+__version__ = "9.0.0"
 
 __all__ = [
     "NetSchool",
+    "MobileNetSchool",
+    "MobileRegion",
+    "MobileToken",
+    "exchange_code",
+    "refresh_token",
+    "published_at",
+    "list_mobile_regions",
+    "get_mobile_region",
     "search_schools",
     "get_login_methods",
     "get_total_marks",

@@ -177,8 +177,66 @@ async with NetSchool("https://sgo.example.ru") as ns:
     info = await ns.school_info()               # информация о школе
 
     await ns.download_attachment(id, buffer)    # скачать вложение
+    data = await ns.download_attachment_as_bytes(id)
     await ns.download_profile_picture(id, buf)  # аватар пользователя
 ```
+
+## Мобильное API (9.0)
+
+`MobileNetSchool` работает через API приложения NetSchool (`/api/mobile/*`). Интерфейс совместим с `NetSchool`: `diary()`, `announcements()`, `mail_list()`, `mail_read()`, `mail_recipients()`, `attachments()`, `assignment_details()`, `export_session()` / `import_session()` возвращают те же модели.
+
+Чем оно лучше веб-API:
+
+- токен живёт **60 дней**, keep-alive не нужен;
+- есть **время публикации задания** (`Assignment.published_at`), учитель, тема и посещаемость урока (`Lesson.teacher`, `topic`, `absence`);
+- итоги по всем предметам одним запросом, аналитика по предмету, лента событий, портфолио.
+
+Для получения токена нужен `client_secret` приложения `parent-mobile`: передайте `client_secret=` или задайте `NETSCHOOL_MOBILE_CLIENT_SECRET`. С библиотекой он не поставляется.
+
+```python
+from netschoolpy import MobileNetSchool, NetSchool, published_at
+
+# По логину и паролю — как в приложении
+async with MobileNetSchool("https://sgo.e-mordovia.ru") as ns:
+    await ns.login("ИвановИ", "password", "МОУ Школа №1")
+    diary = await ns.diary()
+    for day in diary.schedule:
+        for lesson in day.lessons:
+            for a in lesson.assignments:
+                print(lesson.subject, a.content, a.published_at)
+
+# Из уже вошедшего веб-клиента (в том числе через Госуслуги) — без пароля
+mobile = await MobileNetSchool.from_web(web_ns)
+
+# Сохранить и восстановить
+saved = mobile.export_session()
+await MobileNetSchool(url).import_session(saved)
+```
+
+Сырые маршруты возвращают JSON сервера:
+
+```python
+await ns.users()                                  # профиль, школы, дети
+await ns.education()                              # годы обучения
+await ns.terms(); await ns.subjects_raw()         # четверти, предметы
+await ns.classmeetings(start, end)                # уроки
+await ns.classmeeting(classmeeting_id)
+await ns.assignments([id1, id2]); await ns.assignment(id)
+await ns.current_term_assignments()               # «Д/З» текущей четверти
+await ns.assignment_answer(id)                    # ответ ученика
+await ns.attachments_raw(assignment_id)
+await ns.period_events(period_days=14)            # новые оценки и задания
+await ns.totals()                                 # итоговые оценки
+await ns.subject_performance(subject_id, term_id) # «Итоги по предмету»
+await ns.mail_messages("INBOX"); await ns.mail_unread_count()
+await ns.mail_read_raw(id)                        # помечает прочитанным
+await ns.address_book(); await ns.mail_blocked_users()
+await ns.announcements_raw(); await ns.push_settings()
+await ns.portfolios(); await ns.portfolio(id); await ns.download_portfolio_doc(id, doc_id)
+await ns.token_endpoints()
+```
+
+Каталог регионов приложения — без авторизации: `await netschoolpy.list_mobile_regions()`, `await netschoolpy.get_mobile_region(server_id)`. Токен можно продлить через `await ns.refresh()` (стандартный OIDC, на живом сервере не проверялся). Отправка писем через мобильное API не поддерживается.
 
 ## Исключения
 

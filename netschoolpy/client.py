@@ -11,7 +11,7 @@ import ssl as _ssl
 from datetime import date, datetime, timedelta
 from hashlib import md5
 from io import BytesIO
-from typing import Any, Dict, List, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 from urllib.parse import urljoin
 
 import httpx
@@ -45,6 +45,9 @@ from netschoolpy.models import (
     SPECIAL_MARK_DESCRIPTIONS,
     SubjectTotalMark,
 )
+
+if TYPE_CHECKING:
+    from netschoolpy.mobile import MobileToken
 
 __all__ = ["NetSchool", "search_schools", "get_login_methods", "get_total_marks"]
 
@@ -2239,6 +2242,61 @@ class NetSchool:
             f"attachments/{attachment_id}", timeout=timeout,
         )
         buffer.write(resp.content)
+
+    async def download_attachment_as_bytes(
+        self,
+        attachment_id: int,
+        *,
+        timeout: int | None = None,
+    ) -> bytes:
+        """Скачать вложение и вернуть его содержимое."""
+        resp = await self._authed_get(
+            f"attachments/{attachment_id}", timeout=timeout,
+        )
+        return resp.content
+
+    async def diary_init(self, *, timeout: int | None = None) -> dict:
+        """Сырой ответ ``student/diary/init``: ученики и текущий ученик."""
+        resp = await self._authed_get("student/diary/init", timeout=timeout)
+        return resp.json()
+
+    async def is_alive(self, *, timeout: int | None = None) -> bool:
+        """Принимает ли сервер сессию.
+
+        Недоступность сервера — не повод считать сессию мёртвой: в этом случае
+        возвращается ``True``, чтобы не устраивать лишний повторный вход.
+        """
+        try:
+            await self._http.get("student/diary/init", timeout=timeout)
+        except httpx.HTTPStatusError as exc:
+            return exc.response.status_code not in (401, 403)
+        except Exception:
+            return True
+        return True
+
+    async def mobile_token(
+        self,
+        *,
+        client_secret: str | None = None,
+        timeout: int | None = None,
+    ) -> "MobileToken":
+        """Получить токен мобильного API из текущей веб-сессии — без пароля.
+
+        Так делает приложение NetSchool после входа: ``mysettings/mobile/pincode``
+        отдаёт одноразовый код, который меняется на 60-дневный токен в
+        ``identity.ir-tech.ru``. Работает и после входа через Госуслуги.
+        Дальше — :class:`netschoolpy.mobile.MobileNetSchool`.
+        """
+        from .mobile import exchange_code
+
+        resp = await self._authed_get("mysettings/mobile/pincode", timeout=timeout)
+        code = (resp.json() or {}).get("userCode")
+        if not code:
+            raise exceptions.LoginError("Сервер не выдал код для мобильного входа")
+        return await exchange_code(
+            str(code), client_secret=client_secret, proxy=self._proxy,
+            timeout=float(timeout or 30),
+        )
 
     async def download_profile_picture(
         self,

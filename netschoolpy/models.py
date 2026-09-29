@@ -184,6 +184,9 @@ class Assignment(_Model):
     special_mark_description: Optional[str] = None
     mark_set_date: Optional[datetime.date] = None
     attachments: List[Attachment] = Field(default_factory=list)
+    # Когда учитель опубликовал задание. Отдаёт только мобильное API
+    # (``assignmentDate``); веб-дневник его не содержит — там ``None``.
+    published_at: Optional[datetime.datetime] = None
 
     @property
     def title(self) -> str:
@@ -354,6 +357,11 @@ class Lesson(_Model):
     is_distance: bool = False
     # Номер смены.
     relay: Optional[int] = None
+    # Поля ниже заполняет мобильное API; веб-дневник их не отдаёт.
+    teacher: str = ""
+    topic: str = ""
+    # Отметка посещаемости урока, например «Б».
+    absence: str = ""
 
     @classmethod
     def from_raw(cls, data: dict, type_mapping: Dict[int, dict] | None = None) -> Lesson:
@@ -672,6 +680,8 @@ class MailEntry(_Model):
     author: str
     sent: datetime.datetime
     to_names: Optional[str]
+    # Прочитано ли письмо: мобильное API отдаёт флаг в списке, веб — нет.
+    read: Optional[bool] = None
 
     @classmethod
     def from_raw(cls, data: dict) -> MailEntry:
