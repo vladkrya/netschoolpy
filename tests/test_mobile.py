@@ -323,10 +323,12 @@ async def test_mail_send_posts_like_the_app():
     assert request.headers["Authorization"] == "Bearer TOKEN"
     assert json.loads(request.content) == {
         "to": ["cmVjaXBpZW50"], "cc": [], "bcc": [], "text": "Текст", "subject": "Тема",
-        "notify": True, "draft": False, "authorId": 42, "fileAttachmentIds": [],
+        "notify": False, "draft": False, "authorId": 42, "fileAttachmentIds": [],
     }
     raw = await ns.mail_send_raw("Т", "Х", ["a"], cc=["b"])
     assert raw["messageId"] == 77
+    await ns.mail_send("Тема", "Текст", ["a"], notify=True)
+    assert json.loads(seen[-1].content)["notify"] is True
 
 
 async def test_mail_send_needs_recipient_and_reports_errors():

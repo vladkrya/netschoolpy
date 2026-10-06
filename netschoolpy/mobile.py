@@ -863,6 +863,7 @@ class MobileNetSchool:
         cc: Sequence[str] = (),
         bcc: Sequence[str] = (),
         attachment_ids: Sequence[int] = (),
+        notify: bool = False,
     ) -> dict:
         """Отправить письмо: ``POST /mail/messages`` (как «Отправить» в приложении).
 
@@ -879,7 +880,7 @@ class MobileNetSchool:
                 "bcc": list(bcc),
                 "text": text,
                 "subject": subject,
-                "notify": True,
+                "notify": notify,
                 "draft": False,
                 "authorId": self._user_id,
                 "fileAttachmentIds": list(attachment_ids),
@@ -1115,6 +1116,7 @@ class MobileNetSchool:
         to: List[str],
         *,
         attachments: Sequence[Tuple[str, bytes]] = (),
+        notify: bool = False,
         timeout: Optional[float] = None,
     ) -> int:
         """Отправить письмо, при необходимости с файлами ``[(имя, содержимое), …]``, и вернуть его ID.
@@ -1126,7 +1128,7 @@ class MobileNetSchool:
         if not to:
             raise exceptions.NetSchoolError("Не указан получатель письма")
         ids = [await self.upload_attachment(name, data) for name, data in attachments]
-        sent = await self.mail_send_raw(subject, text, to, attachment_ids=ids)
+        sent = await self.mail_send_raw(subject, text, to, attachment_ids=ids, notify=notify)
         return int(sent["messageId"])
 
     async def mobile_token(self, *, client_secret: Optional[str] = None) -> MobileToken:
