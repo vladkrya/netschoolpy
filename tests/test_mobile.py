@@ -141,6 +141,7 @@ async def test_diary_maps_to_web_models():
     assert first.start == datetime.time(8, 30) and second.relay == 2
     mark, homework = first.assignments
     assert mark.mark == 5 and mark.mark_set_date == datetime.date(2026, 9, 28)
+    assert mark.mark_set_at == datetime.datetime(2026, 9, 28, 12, 0, tzinfo=MSK)
     assert homework.deadline == datetime.date(2026, 9, 29)
     assert homework.published_at == datetime.datetime(2026, 9, 27, 2, 5, 45, tzinfo=MSK)
     assert [a.name for a in homework.attachments] == ["дз.docx"]

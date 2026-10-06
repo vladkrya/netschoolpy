@@ -1183,6 +1183,7 @@ def _assignment_from_mobile(data: dict, attachments: List[Attachment]) -> Assign
         is_duty=bool(data.get("duty")),
         deadline=_parse_date(data["dueDate"]) if data.get("dueDate") else None,
         mark_set_date=_parse_date(data["resultDate"]) if data.get("resultDate") else None,
+        mark_set_at=_parse_datetime(data["resultDate"]) if data.get("resultDate") else None,
         published_at=_parse_datetime(data["assignmentDate"]) if data.get("assignmentDate") else None,
         attachments=attachments,
     )

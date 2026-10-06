@@ -184,6 +184,7 @@ class Assignment(_Model):
     special_mark_code: Optional[str] = None
     special_mark_description: Optional[str] = None
     mark_set_date: Optional[datetime.date] = None
+    mark_set_at: Optional[datetime.datetime] = None
     attachments: List[Attachment] = Field(default_factory=list)
     # Когда учитель опубликовал задание. Отдаёт только мобильное API
     # (``assignmentDate``); веб-дневник его не содержит — там ``None``.
