@@ -13,8 +13,16 @@ from .exceptions import (
 from .models import (
     AssignedMark,
     AssignmentDetails,
+    AssignmentType,
     Teacher,
     LoginMethods,
+    MailDraft,
+    RecipientGroup,
+    Report,
+    ReportFilter,
+    ReportFilterItem,
+    ReportGroup,
+    ReportInfo,
     SPECIAL_MARK_DESCRIPTIONS,
     ReportingPeriod,
     SchoolYear,
@@ -29,6 +37,7 @@ from .mobile import (
     MobileRegion,
     MobileToken,
     exchange_code,
+    published_app_version,
     published_at,
     refresh_token,
 )
@@ -36,7 +45,7 @@ from .mobile import get_region as get_mobile_region
 from .mobile import list_regions as list_mobile_regions
 from .regions import REGIONS, get_url, list_regions
 
-__version__ = "9.3.2"
+__version__ = "9.4.0"
 
 __all__ = [
     "NetSchool",
@@ -46,6 +55,7 @@ __all__ = [
     "exchange_code",
     "refresh_token",
     "published_at",
+    "published_app_version",
     "list_mobile_regions",
     "get_mobile_region",
     "search_schools",
@@ -53,8 +63,16 @@ __all__ = [
     "get_total_marks",
     "AssignedMark",
     "AssignmentDetails",
+    "AssignmentType",
     "Teacher",
     "LoginMethods",
+    "MailDraft",
+    "RecipientGroup",
+    "Report",
+    "ReportFilter",
+    "ReportFilterItem",
+    "ReportGroup",
+    "ReportInfo",
     "SPECIAL_MARK_DESCRIPTIONS",
     "ReportingPeriod",
     "SchoolYear",

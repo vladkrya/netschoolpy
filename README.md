@@ -179,7 +179,59 @@ async with NetSchool("https://sgo.example.ru") as ns:
     await ns.download_attachment(id, buffer)    # скачать вложение
     data = await ns.download_attachment_as_bytes(id)
     await ns.download_profile_picture(id, buf)  # аватар пользователя
+
+    kinds = await ns.assignment_types()         # типы заданий (ДЗ, К, …)
+    limits = await ns.upload_limits()           # лимиты загрузки файлов, КБ
+    settings = await ns.my_settings()           # профиль (личные данные!)
 ```
+
+### Почта
+
+Одинаково в `NetSchool` и `MobileNetSchool`:
+
+```python
+from netschoolpy import RecipientGroup
+
+page = await ns.mail_list("Inbox", search="контрольная")   # поиск по теме
+page = await ns.mail_list("Inbox", search="Петрова", search_field="author", ascending=True)
+msg = await ns.mail_read(message_id)
+
+teachers = await ns.mail_recipients(RecipientGroup.TEACHERS)  # веб: группы адресной книги
+mid = await ns.mail_send("Тема", "Текст", [teachers[0].id],
+                         attachments=[("дз.pdf", pdf_bytes)])  # вернёт ID письма
+
+draft = await ns.mail_draft(message_id, "reply")   # «Re: …», цитата и адресат
+await ns.mail_send(draft.subject, "Ответ" + draft.text, [r.id for r in draft.to])
+
+await ns.mail_mark_read([mid])                     # read=False — непрочитанным
+await ns.mail_delete([mid])                        # в «Удалённые»
+await ns.mail_restore([mid])                       # обратно
+await ns.mail_delete([mid], permanent=True)        # из «Удалённых» — навсегда
+```
+
+`RecipientGroup`: `ADMINISTRATION` (по умолчанию), `HEAD_TEACHERS`, `CLASS_TEACHERS`, `TEACHERS`, `CLASSMATES`. Мобильный `mail_recipients()` возвращает всю адресную книгу сразу.
+
+### Отчёты
+
+Любой отчёт со страницы «Отчёты» — тем же путём, что и сайт (очередь задач и SignalR):
+
+```python
+for group in await ns.reports():
+    print(group.title, [r.id for r in group.reports])
+
+filters = await ns.report_filters("StudentAverageMark")   # что можно выбрать
+
+report = await ns.report(
+    "StudentTotal",
+    {"TERMID": "2 четверть"},          # value или название пункта
+    start=date(2026, 9, 1), end=date(2026, 9, 15),   # для фильтра-интервала
+)
+report.html                            # как показывает сайт
+for row in report.tables()[1]:         # таблицы: строки → тексты ячеек
+    print(row)
+```
+
+Не указанные фильтры берут значение по умолчанию. `total_marks()` и `assigned_marks()` — готовые разборы отчётов `StudentTotalMarks` и `StudentGrades`.
 
 ## Мобильное API (9.0)
 
@@ -226,17 +278,20 @@ await ns.current_term_assignments()               # «Д/З» текущей ч�
 await ns.assignment_answer(id)                    # ответ ученика
 await ns.attachments_raw(assignment_id)
 await ns.period_events(period_days=14)            # новые оценки и задания
+await ns.period_events(types=["TermTotalInfo"])   # только итоговые за период
 await ns.totals()                                 # итоговые оценки
 await ns.subject_performance(subject_id, term_id) # «Итоги по предмету»
 await ns.mail_messages("INBOX"); await ns.mail_unread_count()
 await ns.mail_read_raw(id)                        # помечает прочитанным
-await ns.address_book(); await ns.mail_blocked_users()
+await ns.address_book(); await ns.recipient(user_id)
+await ns.mail_blocked_users()
+await ns.mail_block(user_id); await ns.mail_unblock(user_id)  # эффект не подтверждён
 await ns.announcements_raw(); await ns.push_settings()
 await ns.portfolios(); await ns.portfolio(id); await ns.download_portfolio_doc(id, doc_id)
 await ns.token_endpoints()
 ```
 
-Каталог регионов приложения — без авторизации: `await netschoolpy.list_mobile_regions()`, `await netschoolpy.get_mobile_region(server_id)`. Токен можно продлить через `await ns.refresh()` (стандартный OIDC, на живом сервере не проверялся). Отправка писем через мобильное API не поддерживается.
+Каталог регионов приложения — без авторизации: `await netschoolpy.list_mobile_regions()`, `await netschoolpy.get_mobile_region(server_id)`. Последняя версия приложения в каталоге — `await netschoolpy.published_app_version()`. Токен можно продлить через `await ns.refresh()`.
 
 ## Исключения
 
@@ -260,6 +315,20 @@ netschoolpy.ServerUnavailable   # сервер не ответил
 import logging
 logging.basicConfig(level=logging.DEBUG)
 ```
+
+## Благодарности
+
+«Сетевой город» не публикует документацию к своему API, и многое о нём сначала
+узнали другие. Код netschoolpy написан с нуля, но что и где искать —
+подсказали эти проекты:
+
+- [nm17/netschoolapi](https://github.com/nm17/netschoolapi) — Даниил Николаев, Иван Горланов, Елисей Власенко, и форк [MrConsoleka/netschoolapi](https://github.com/MrConsoleka/netschoolapi): первая Python-библиотека для «Сетевого города» — вход, дневник, вложения;
+- [lentryd/NetSchoolApi](https://github.com/lentryd/NetSchoolApi) (JavaScript): отчёты через очередь задач и SignalR;
+- [TheEntropyShard/NetSchoolAPI](https://github.com/TheEntropyShard/NetSchoolAPI) (Java): действия с письмами веб-API, группы адресной книги, список отчётов, типы заданий, лимиты загрузки;
+- [chstudios-ru/mobnslib](https://github.com/chstudios-ru/mobnslib): почта мобильного API — удаление, заготовки ответа, получатель по id, блокировка — и типы событий ленты.
+
+Каждый маршрут перед добавлением проверен на живом сервере; там, где проверить
+не удалось, это сказано в документации метода.
 
 ## Лицензия
 

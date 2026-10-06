@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "netschoolpy"
-version = "9.3.2"
+version = "9.4.0"
 description = "Асинхронный клиент для «Сетевого города» с поддержкой ЕСИА/Госуслуг, Pydantic v2, SignalR и CLI"
 readme = "README.md"
 license = { text = "GPL-3.0-only" }

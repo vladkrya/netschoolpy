@@ -11,6 +11,7 @@ Pydantic v2 (``model_dump()``, ``model_dump_json()``), но разбор отв�
 from __future__ import annotations
 
 import datetime
+from enum import IntEnum
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
@@ -724,6 +725,15 @@ class MailRecipient(_Model):
         )
 
 
+class RecipientGroup(IntEnum):
+    """Группы адресной книги веб-почты (параметр ``group`` в ``mail/recipients``)."""
+    ADMINISTRATION = 1
+    HEAD_TEACHERS = 2
+    CLASS_TEACHERS = 3
+    TEACHERS = 4
+    CLASSMATES = 7
+
+
 class Message(_Model):
     """Письмо внутренней почты SGO."""
     id: int
@@ -758,6 +768,28 @@ class Message(_Model):
                 Attachment.from_raw(a)
                 for a in data.get("fileAttachments", [])
             ],
+        )
+
+
+class MailDraft(_Model):
+    """Заготовка письма от сервера: ответ или пересылка с цитатой и адресатами.
+
+    ``to``/``cc`` уже заполнены сервером — их ``id`` передаются в ``mail_send``.
+    """
+    subject: str
+    text: str
+    to: List[MailRecipient] = Field(default_factory=list)
+    cc: List[MailRecipient] = Field(default_factory=list)
+    file_attachments: List[Attachment] = Field(default_factory=list)
+
+    @classmethod
+    def from_raw(cls, data: dict) -> MailDraft:
+        return cls(
+            subject=data.get("subject") or "",
+            text=data.get("text") or "",
+            to=[MailRecipient.from_raw(r) for r in data.get("to") or []],
+            cc=[MailRecipient.from_raw(r) for r in data.get("cc") or []],
+            file_attachments=[Attachment.from_raw(a) for a in data.get("fileAttachments") or []],
         )
 
 
@@ -865,3 +897,113 @@ class TotalMarksReportLine(BaseModel):
     year_mark: str | None = None
     exam_mark: str | None = None
     final_mark: str | None = None
+
+
+# ─────────────────────────────── Справочники ──────────────────────────
+
+class AssignmentType(_Model):
+    """Тип задания: «Домашнее задание» (ДЗ), «Контрольная работа» (К) …"""
+    id: int
+    name: str
+    abbr: str
+    order: int = 0
+    is_active: bool = True
+
+    @classmethod
+    def from_raw(cls, data: dict) -> AssignmentType:
+        return cls(
+            id=data["id"],
+            name=data.get("name") or "",
+            abbr=data.get("abbr") or "",
+            order=data.get("order") or 0,
+            is_active=data.get("isActive", True),
+        )
+
+
+# ───────────────────────────────── Отчёты ─────────────────────────────
+
+class ReportInfo(_Model):
+    """Отчёт из списка ``reports``: ``id`` передаётся в :meth:`NetSchool.report`."""
+    id: str
+    title: str
+
+
+class ReportGroup(_Model):
+    """Раздел «Отчётов», например «Итоги успеваемости»."""
+    id: str
+    title: str
+    reports: List[ReportInfo] = Field(default_factory=list)
+
+    @classmethod
+    def from_raw(cls, data: dict) -> ReportGroup:
+        return cls(
+            id=data.get("id") or "",
+            title=data.get("title") or "",
+            reports=[ReportInfo(id=r["id"], title=r.get("title") or "") for r in data.get("reports") or []],
+        )
+
+
+class ReportFilterItem(_Model):
+    value: str
+    title: str
+
+
+class ReportFilter(_Model):
+    """Фильтр формы отчёта: ученик (``SID``), класс (``PCLID``), период (``TERMID``) …
+
+    У фильтра-интервала (``period``) вместо ``items`` заданы ``start``/``end`` —
+    допустимые границы.
+    """
+    id: str
+    default: str = ""
+    items: List[ReportFilterItem] = Field(default_factory=list)
+    start: Optional[datetime.date] = None
+    end: Optional[datetime.date] = None
+
+    @property
+    def is_range(self) -> bool:
+        return self.start is not None or self.end is not None
+
+    @classmethod
+    def from_raw(cls, data: dict) -> ReportFilter:
+        bounds = data.get("range") or {}
+        return cls(
+            id=data["filterId"],
+            default="" if data.get("defaultValue") is None else str(data["defaultValue"]),
+            items=[
+                ReportFilterItem(value=str(i.get("value")), title=str(i.get("title") or ""))
+                for i in data.get("items") or []
+            ],
+            start=_parse_date(bounds["start"]) if bounds.get("start") else None,
+            end=_parse_date(bounds["end"]) if bounds.get("end") else None,
+        )
+
+
+class Report(_Model):
+    """Готовый отчёт: HTML, как его показывает сайт, и таблицы из него."""
+    id: str
+    html: str
+
+    def tables(self) -> List[List[List[str]]]:
+        """Таблицы отчёта: список таблиц, таблица — строки, строка — тексты ячеек.
+
+        Объединённые ячейки (``colspan``) не разворачиваются — строка содержит
+        столько значений, сколько ячеек в разметке.
+        """
+        import html as _html
+        import re
+
+        def text(cell: str) -> str:
+            plain = _html.unescape(re.sub(r"<[^>]+>", " ", cell))
+            return re.sub(r"\s+", " ", plain).strip()
+
+        result: List[List[List[str]]] = []
+        for table in re.findall(r"<table[^>]*>(.*?)</table>", self.html, flags=re.I | re.S):
+            rows = []
+            for tr in re.findall(r"<tr[^>]*>(.*?)</tr>", table, flags=re.I | re.S):
+                cells = re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", tr, flags=re.I | re.S)
+                if cells:
+                    rows.append([text(c) for c in cells])
+            if rows:
+                result.append(rows)
+        return result

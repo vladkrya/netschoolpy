@@ -119,6 +119,7 @@ class HttpSession:
         *,
         data: Any | None = None,
         json: Any | None = None,
+        files: Any | None = None,
         params: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
         timeout: int | None = None,
@@ -132,7 +133,7 @@ class HttpSession:
         if raw:
             path = f"/{path.lstrip('/')}"
         return await self._send(
-            "POST", path, data=data, json=json,
+            "POST", path, data=data, json=json, files=files,
             params=params, headers=headers, timeout=timeout,
         )
 

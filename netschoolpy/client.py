@@ -6,12 +6,14 @@ import asyncio
 import html
 import json
 import logging
+import mimetypes
 import re
 import ssl as _ssl
 from datetime import date, datetime, timedelta
 from hashlib import md5
 from io import BytesIO
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
+from collections.abc import Iterable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 from urllib.parse import urljoin
 
 import httpx
@@ -28,13 +30,19 @@ from netschoolpy.models import (
     AssignedMark,
     Assignment,
     AssignmentDetails,
+    AssignmentType,
     Attachment,
     Diary,
     LoginMethods,
+    MailDraft,
     MailEntry,
     MailPage,
     MailRecipient,
     Message,
+    RecipientGroup,
+    Report,
+    ReportFilter,
+    ReportGroup,
     ReportingPeriod,
     School,
     SchoolYear,
@@ -1855,49 +1863,34 @@ class NetSchool:
             )
         return rows
 
-    async def total_marks(
+    async def _run_report(
         self,
+        report_id: str,
+        selected_data: list[dict[str, str]],
         *,
-        subject: str | None = None,
         timeout: int | None = None,
-    ) -> list[SubjectTotalMark]:
-        """Получить выставленные итоговые отметки из отчета StudentTotalMarks.
+    ) -> str:
+        """Построить отчёт так же, как веб-интерфейс, и вернуть его HTML.
 
-        Метод использует тот же пайплайн, что и веб-интерфейс:
-        1) `reports/studenttotalmarks/queue` -> `taskId`
-        2) SignalR `queueHub.startTaskAsync(taskId, queueKey)`
-        3) по событию `complete` скачивается `files/{fileId}`
+        1) ``reports/{id}/queue`` → ``taskId`` и ``queueKey``;
+        2) SignalR ``queueHub.startTaskAsync(taskId, queueKey)``;
+        3) по событию ``complete`` скачивается ``files/{fileId}``.
 
-        Args:
-            subject: Если задан, вернуть только строки по предмету
-                (регистронезависимое вхождение).
+        Задачу ставим в очередь уже после рукопожатия: иначе ``complete``
+        может прийти раньше, чем мы начнём слушать.
         """
         if websockets is None:
             raise exceptions.NetSchoolError(
-                "Для total_marks требуется пакет 'websockets'. "
+                "Для отчётов требуется пакет 'websockets'. "
                 "Установите его: pip install websockets"
             )
-
-        report_meta = (await self._authed_get("reports/studenttotalmarks", timeout=timeout)).json()
-        filters = {x["filterId"]: x for x in report_meta.get("filterSources", [])}
-        if "SID" not in filters or "PCLID" not in filters:
-            raise exceptions.NetSchoolError("Не удалось получить фильтры отчета StudentTotalMarks")
+        at = self._access_token
+        if not at:
+            raise exceptions.SessionExpired("Нет access-token, выполните login()")
 
         ctx = (await self._authed_get("context", timeout=timeout)).json()
-
         payload = {
-            "selectedData": [
-                {
-                    "filterId": "SID",
-                    "filterValue": str(filters["SID"]["defaultValue"]),
-                    "filterText": (filters["SID"].get("items") or [{}])[0].get("title", ""),
-                },
-                {
-                    "filterId": "PCLID",
-                    "filterValue": str(filters["PCLID"]["defaultValue"]),
-                    "filterText": (filters["PCLID"].get("items") or [{}])[0].get("title", ""),
-                },
-            ],
+            "selectedData": selected_data,
             "params": [
                 {"name": "SCHOOLYEARID", "value": str(self._year_id)},
                 {"name": "SERVERTIMEZONE", "value": 3},
@@ -1911,10 +1904,6 @@ class NetSchool:
             await self._authed_get("earlyaccess", params={"accessKey": "irtechsignalr"}, timeout=timeout)
         except Exception:
             pass
-
-        at = self._access_token
-        if not at:
-            raise exceptions.SessionExpired("Нет access-token, выполните login()")
 
         ws_base = re.sub(r"^http", "ws", self._http.base_url.rstrip("/"), count=1)
         ws_url = f"{ws_base}/webapi/signalr/queueHub?at={at}"
@@ -1934,11 +1923,11 @@ class NetSchool:
             await ws.send('{"protocol":"json","version":1}\x1e')
             _ = await ws.recv()  # handshake ack
 
-            queued = (await self._authed_post("reports/studenttotalmarks/queue", json=payload, timeout=timeout)).json()
+            queued = (await self._authed_post(f"reports/{report_id}/queue", json=payload, timeout=timeout)).json()
             task_id = queued.get("taskId")
             queue_key = queued.get("queueKey")
             if not task_id or not queue_key:
-                raise exceptions.NetSchoolError("Некорректный ответ reports/.../queue")
+                raise exceptions.NetSchoolError(f"Некорректный ответ reports/{report_id}/queue")
 
             invoke = {
                 "arguments": [task_id, queue_key],
@@ -1968,9 +1957,40 @@ class NetSchool:
                     break
 
         if not file_id:
-            raise exceptions.NetSchoolError("Не удалось получить fileId отчета StudentTotalMarks")
+            raise exceptions.NetSchoolError(f"Не удалось получить fileId отчета {report_id}")
 
-        report_html = (await self._authed_get(f"files/{file_id}", timeout=timeout)).text
+        return (await self._authed_get(f"files/{file_id}", timeout=timeout)).text
+
+    async def total_marks(
+        self,
+        *,
+        subject: str | None = None,
+        timeout: int | None = None,
+    ) -> list[SubjectTotalMark]:
+        """Получить выставленные итоговые отметки из отчета StudentTotalMarks.
+
+        Args:
+            subject: Если задан, вернуть только строки по предмету
+                (регистронезависимое вхождение).
+        """
+        report_meta = (await self._authed_get("reports/studenttotalmarks", timeout=timeout)).json()
+        filters = {x["filterId"]: x for x in report_meta.get("filterSources", [])}
+        if "SID" not in filters or "PCLID" not in filters:
+            raise exceptions.NetSchoolError("Не удалось получить фильтры отчета StudentTotalMarks")
+
+        selected_data = [
+            {
+                "filterId": "SID",
+                "filterValue": str(filters["SID"]["defaultValue"]),
+                "filterText": (filters["SID"].get("items") or [{}])[0].get("title", ""),
+            },
+            {
+                "filterId": "PCLID",
+                "filterValue": str(filters["PCLID"]["defaultValue"]),
+                "filterText": (filters["PCLID"].get("items") or [{}])[0].get("title", ""),
+            },
+        ]
+        report_html = await self._run_report("studenttotalmarks", selected_data, timeout=timeout)
         rows = self._parse_total_marks_report_html(report_html)
 
         if subject:
@@ -1990,12 +2010,6 @@ class NetSchool:
         В отличие от `diary()`, метод возвращает официальную колонку
         «Дата выставления оценки» из отчетной формы СГО.
         """
-        if websockets is None:
-            raise exceptions.NetSchoolError(
-                "Для assigned_marks требуется пакет 'websockets'. "
-                "Установите его: pip install websockets"
-            )
-
         report_meta = (await self._authed_get("reports/studentgrades", timeout=timeout)).json()
         filter_sources = report_meta.get("filterSources", [])
         filters = {x["filterId"]: x for x in filter_sources}
@@ -2037,81 +2051,7 @@ class NetSchool:
                 }
             )
 
-        ctx = (await self._authed_get("context", timeout=timeout)).json()
-        payload = {
-            "selectedData": selected_data,
-            "params": [
-                {"name": "SCHOOLYEARID", "value": str(self._year_id)},
-                {"name": "SERVERTIMEZONE", "value": 3},
-                {"name": "FULLSCHOOLNAME", "value": ctx.get("organizationName", "")},
-                {"name": "DATEFORMAT", "value": ctx.get("dateFormat", "")},
-            ],
-        }
-
-        try:
-            await self._authed_get("earlyaccess", params={"accessKey": "irtechsignalr"}, timeout=timeout)
-        except Exception:
-            pass
-
-        at = self._access_token
-        if not at:
-            raise exceptions.SessionExpired("Нет access-token, выполните login()")
-
-        ws_base = re.sub(r"^http", "ws", self._http.base_url.rstrip("/"), count=1)
-        ws_url = f"{ws_base}/webapi/signalr/queueHub?at={at}"
-
-        cookie_header = "; ".join([f"{k}={v}" for k, v in self._http.client.cookies.items()])
-        ssl_ctx = _ssl.create_default_context()
-        ssl_ctx.check_hostname = False
-        ssl_ctx.verify_mode = _ssl.CERT_NONE
-
-        file_id: str | None = None
-        async with websockets.connect(  # type: ignore[union-attr]
-            ws_url,
-            origin=self._http.base_url,
-            ssl=ssl_ctx,
-            additional_headers={"Cookie": cookie_header},
-        ) as ws:
-            await ws.send('{"protocol":"json","version":1}\x1e')
-            _ = await ws.recv()
-
-            queued = (await self._authed_post("reports/studentgrades/queue", json=payload, timeout=timeout)).json()
-            task_id = queued.get("taskId")
-            queue_key = queued.get("queueKey")
-            if not task_id or not queue_key:
-                raise exceptions.NetSchoolError("Некорректный ответ reports/studentgrades/queue")
-
-            invoke = {
-                "arguments": [task_id, queue_key],
-                "invocationId": "0",
-                "target": "startTaskAsync",
-                "type": 1,
-            }
-            await ws.send(json.dumps(invoke, ensure_ascii=False) + "\x1e")
-
-            for _ in range(40):
-                raw = await asyncio.wait_for(ws.recv(), timeout=15)
-                if isinstance(raw, bytes):
-                    raw = raw.decode("utf-8", errors="ignore")
-                for frame in self._parse_signalr_frames(raw):
-                    if frame.get("type") == 3 and frame.get("invocationId") == "0":
-                        result = frame.get("result") or {}
-                        if not result.get("success", False):
-                            raise exceptions.NetSchoolError(
-                                result.get("message") or "Ошибка запуска задачи отчета"
-                            )
-                    if frame.get("target") == "complete":
-                        args = frame.get("arguments") or []
-                        if args and isinstance(args[0], dict):
-                            file_id = args[0].get("data")
-                            break
-                if file_id:
-                    break
-
-        if not file_id:
-            raise exceptions.NetSchoolError("Не удалось получить fileId отчета StudentGrades")
-
-        report_html = (await self._authed_get(f"files/{file_id}", timeout=timeout)).text
+        report_html = await self._run_report("studentgrades", selected_data, timeout=timeout)
         return self._parse_assigned_marks_report_html(
             report_html,
             subject_label=selected_subject_text or (subject or ""),
@@ -2463,6 +2403,109 @@ class NetSchool:
         ]
         return result
 
+    # ══ Отчёты ═══════════════════════════════════════════════
+
+    async def reports(self, *, timeout: int | None = None) -> List[ReportGroup]:
+        """Отчёты, доступные пользователю, по разделам — как на странице «Отчёты».
+
+        Пример::
+
+            for group in await ns.reports():
+                for r in group.reports:
+                    print(r.id, r.title)   # StudentTotal Отчет об успеваемости…
+        """
+        resp = await self._authed_get("reports", timeout=timeout)
+        return [ReportGroup.from_raw(g) for g in resp.json()]
+
+    async def report_filters(
+        self, report_id: str, *, timeout: int | None = None,
+    ) -> List[ReportFilter]:
+        """Фильтры формы отчёта с допустимыми и выбранными по умолчанию значениями."""
+        resp = await self._authed_get(f"reports/{report_id}", timeout=timeout)
+        return [ReportFilter.from_raw(f) for f in resp.json().get("filterSources") or []]
+
+    async def report(
+        self,
+        report_id: str,
+        filters: Mapping[str, Any] | None = None,
+        *,
+        start: date | None = None,
+        end: date | None = None,
+        timeout: int | None = None,
+    ) -> Report:
+        """Построить любой отчёт из :meth:`reports`.
+
+        Не указанные фильтры берут значение по умолчанию, как в форме на сайте.
+        Значение фильтра можно задать как ``value``, так и названием пункта.
+
+        Args:
+            report_id: ``id`` отчёта, например ``"StudentTotal"``.
+            filters: ``{filterId: значение}``, например ``{"TERMID": "2 четверть"}``.
+            start, end: Границы фильтра-интервала (``period``), если он есть.
+
+        Пример::
+
+            report = await ns.report("StudentAverageMark", {"MarksType": "Итоговые отметки"})
+            for row in report.tables()[0]:
+                print(row)
+        """
+        wanted = dict(filters or {})
+        selected: list[dict[str, str]] = []
+        for f in await self.report_filters(report_id, timeout=timeout):
+            if f.is_range:
+                value = f.default
+                if start or end:
+                    lo, hi = start or f.start, end or f.end
+                    value = f"{lo:%Y-%m-%d}T00:00:00.0000000 - {hi:%Y-%m-%d}T00:00:00.0000000"
+                selected.append({"filterId": f.id, "filterValue": value, "filterText": ""})
+                continue
+            raw = wanted.pop(f.id, None)
+            value = f.default if raw is None else str(raw)
+            item = next((i for i in f.items if i.value == value), None)
+            if item is None and raw is not None and f.items:
+                needle = value.casefold()
+                item = next((i for i in f.items if i.title.casefold() == needle), None)
+                if item is None:
+                    choices = ", ".join(i.title for i in f.items)
+                    raise exceptions.NetSchoolError(
+                        f"{report_id}: у фильтра {f.id} нет значения {raw!r}; есть: {choices}"
+                    )
+            if item is not None:
+                value = item.value
+            selected.append(
+                {"filterId": f.id, "filterValue": value, "filterText": item.title if item else ""}
+            )
+        if wanted:
+            raise exceptions.NetSchoolError(
+                f"{report_id}: нет фильтров {', '.join(sorted(wanted))}"
+            )
+        html_text = await self._run_report(report_id, selected, timeout=timeout)
+        return Report(id=report_id, html=html_text)
+
+    # ══ Справочники и настройки ═══════════════════════════════
+
+    async def assignment_types(
+        self, *, include_inactive: bool = False, timeout: int | None = None,
+    ) -> List[AssignmentType]:
+        """Типы заданий школы: «Домашнее задание» (ДЗ), «Контрольная работа» (К) …"""
+        resp = await self._authed_get(
+            "grade/assignment/types", params={"all": include_inactive}, timeout=timeout,
+        )
+        return [AssignmentType.from_raw(t) for t in resp.json()]
+
+    async def my_settings(self, *, timeout: int | None = None) -> dict:
+        """Сырой ``mysettings``: профиль и настройки пользователя.
+
+        Внимание: в ответе личные данные — телефон, e-mail, дата рождения.
+        """
+        resp = await self._authed_get("mysettings", timeout=timeout)
+        return resp.json()
+
+    async def upload_limits(self, *, timeout: int | None = None) -> dict:
+        """Лимиты загрузки файлов, КБ: ``mailFileSizeLimit``, ``assignmentFileSizeLimit`` …"""
+        resp = await self._authed_get("attachments/uploadLimits", timeout=timeout)
+        return resp.json()
+
     # ══ Способы входа ═════════════════════════════════════════
 
     async def login_methods(
@@ -2567,6 +2610,10 @@ class NetSchool:
         page: int = 1,
         page_size: int = 20,
         *,
+        search: str | None = None,
+        search_field: str = "subject",
+        order_by: str = "sent",
+        ascending: bool = False,
         timeout: int | None = None,
     ) -> MailPage:
         """Получить список писем из указанной папки.
@@ -2575,6 +2622,10 @@ class NetSchool:
             folder: ``"Inbox"``, ``"Sent"``, ``"Draft"``, ``"Deleted"``.
             page: Номер страницы (начиная с 1).
             page_size: Количество писем на странице.
+            search: Искать текст в поле ``search_field``: ``"subject"``,
+                ``"author"``, ``"toNames"``.
+            order_by: Поле сортировки: ``"sent"``, ``"subject"``, ``"author"``.
+            ascending: Сортировать по возрастанию (по умолчанию новые сверху).
         """
         folder_labels = {
             "Inbox": "Входящие",
@@ -2603,8 +2654,8 @@ class NetSchool:
                 "fields": ["author", "subject", "sent"],
                 "page": page,
                 "pageSize": page_size,
-                "search": None,
-                "order": {"fieldId": "sent", "ascending": False},
+                "search": {"fieldId": search_field, "text": search} if search else None,
+                "order": {"fieldId": order_by, "ascending": ascending},
             },
             timeout=timeout,
         )
@@ -2633,9 +2684,18 @@ class NetSchool:
         return Message.from_raw(resp.json())
 
     async def mail_recipients(
-        self, *, timeout: int | None = None,
+        self,
+        group: int = RecipientGroup.ADMINISTRATION,
+        *,
+        timeout: int | None = None,
     ) -> List[MailRecipient]:
-        """Список доступных получателей писем (учителя, администрация)."""
+        """Получатели писем из группы адресной книги.
+
+        Группа — :class:`RecipientGroup`: администрация (по умолчанию),
+        завучи, классные руководители, учителя, одноклассники::
+
+            teachers = await ns.mail_recipients(RecipientGroup.TEACHERS)
+        """
         resp = await self._authed_get(
             "mail/recipients",
             params={
@@ -2643,11 +2703,35 @@ class NetSchool:
                 "organizationId": self._school_id,
                 "funcType": 2,
                 "orgType": 1,
-                "group": 1,
+                "group": int(group),
             },
             timeout=timeout,
         )
         return [MailRecipient.from_raw(r) for r in resp.json()]
+
+    async def upload_attachment(
+        self,
+        name: str,
+        data: bytes,
+        content_type: str | None = None,
+        *,
+        timeout: int | None = None,
+    ) -> str:
+        """Загрузить файл для письма и вернуть его GUID для :meth:`mail_send`.
+
+        Лимиты размера — в :meth:`upload_limits` (``mailFileSizeLimit``, КБ).
+        """
+        mime = content_type or mimetypes.guess_type(name)[0] or "application/octet-stream"
+        resp = await self._authed_post(
+            "attachments",
+            files={"file": (name, data, mime)},
+            data={"description": ""},
+            timeout=timeout,
+        )
+        guid = resp.json()
+        if not isinstance(guid, str) or not guid:
+            raise exceptions.NetSchoolError(f"attachments: неожиданный ответ {guid!r}")
+        return guid
 
     async def mail_send(
         self,
@@ -2655,26 +2739,89 @@ class NetSchool:
         text: str,
         to: List[str],
         *,
+        cc: Sequence[str] = (),
+        bcc: Sequence[str] = (),
+        attachments: Sequence[Tuple[str, bytes]] = (),
+        notify: bool = False,
         timeout: int | None = None,
-    ) -> None:
-        """Отправить письмо.
+    ) -> int:
+        """Отправить письмо и вернуть его ID.
 
         Args:
             subject: Тема письма.
             text: Текст письма.
             to: Список ID получателей (из ``mail_recipients()``).
+            cc: Копия, bcc: скрытая копия — тоже ID получателей.
+            attachments: Файлы ``[(имя, содержимое), …]``; загружаются до
+                отправки, и если загрузка не удалась, письмо не уходит.
+            notify: Попросить уведомление о прочтении.
         """
-        await self._authed_post(
-            "mail/messages/send",
+        if not to:
+            raise exceptions.NetSchoolError("Не указан получатель письма")
+        guids = [await self.upload_attachment(name, data, timeout=timeout) for name, data in attachments]
+        resp = await self._authed_post(
+            "mail/messages",
             json={
                 "subject": subject,
                 "text": text,
-                "to": [{"id": r} for r in to],
-                "cc": [],
-                "bcc": [],
-                "notify": False,
-                "fileAttachments": [],
+                "to": list(to),
+                "cc": list(cc),
+                "bcc": list(bcc),
+                "notify": notify,
+                "draft": False,
+                "fileAttachmentGuids": guids,
             },
+            timeout=timeout,
+        )
+        return int(resp.json()["messageId"])
+
+    async def mail_draft(
+        self, message_id: int, action: str = "reply", *, timeout: int | None = None,
+    ) -> MailDraft:
+        """Заготовка ответа на письмо: тема с «Re:»/«Fw:», цитата и адресаты.
+
+        Args:
+            action: ``"reply"``, ``"replyAll"`` (ученикам сервер запрещает)
+                или ``"forward"``.
+        """
+        resp = await self._authed_get(
+            f"mail/messages/{message_id}/edit",
+            params={"action": action},
+            timeout=timeout,
+        )
+        return MailDraft.from_raw(resp.json())
+
+    async def mail_mark_read(
+        self, message_ids: Iterable[int], read: bool = True, *, timeout: int | None = None,
+    ) -> None:
+        """Пометить письма прочитанными (или непрочитанными при ``read=False``)."""
+        await self._authed_post(
+            "mail/messages/mark-as",
+            json={"messageId": list(message_ids), "read": read},
+            timeout=timeout,
+        )
+
+    async def mail_delete(
+        self, message_ids: Iterable[int], *, permanent: bool = False, timeout: int | None = None,
+    ) -> None:
+        """Переместить письма в «Удалённые»; ``permanent=True`` — удалить навсегда.
+
+        Навсегда удаляются письма из «Удалённых»: сначала удалите их обычным
+        вызовом.
+        """
+        await self._authed_post(
+            "mail/messages/delete" if permanent else "mail/messages/moving",
+            json={"messageId": list(message_ids)},
+            timeout=timeout,
+        )
+
+    async def mail_restore(
+        self, message_ids: Iterable[int], *, timeout: int | None = None,
+    ) -> None:
+        """Вернуть письма из «Удалённых» в папки, где они были."""
+        await self._authed_post(
+            "mail/messages/restore",
+            json={"messageId": list(message_ids)},
             timeout=timeout,
         )
 

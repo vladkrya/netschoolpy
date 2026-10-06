@@ -54,6 +54,7 @@ from .models import (
     Day,
     Diary,
     Lesson,
+    MailDraft,
     MailEntry,
     MailPage,
     MailRecipient,
@@ -180,7 +181,13 @@ def _raise_for(response: httpx.Response, what: str) -> None:
     if status == httpx.codes.UNAUTHORIZED:
         raise exceptions.SessionExpired("Токен мобильного API истёк или отозван (401)")
     if status >= 500:
-        raise exceptions.ServerUnavailable(f"{what}: сервер ответил {status}")
+        # На отказ по смыслу («Ученики не могут отвечать всем!») сервер тоже
+        # отвечает 500 — показываем его текст.
+        try:
+            detail = response.json().get("message") or ""
+        except Exception:
+            detail = ""
+        raise exceptions.ServerUnavailable(f"{what}: сервер ответил {status}" + (f": {detail}" if detail else ""))
     if response.is_error:
         raise exceptions.NetSchoolError(f"{what}: HTTP {status} {response.text[:200]}")
 
@@ -226,6 +233,23 @@ async def get_region(
             headers={"User-Agent": APP_USER_AGENT},
         )
     return MobileRegion.from_raw(_json(response, "end-points/{id}"))
+
+
+async def published_app_version(
+    *, proxy: Optional[str] = None, timeout: float = _DEFAULT_TIMEOUT,
+) -> str:
+    """Последняя опубликованная версия приложения NetSchool, например ``"2.0.2"``.
+
+    Библиотека представляется версией :data:`APP_VERSION`; если сервер начнёт
+    отказывать, сравните её с этой.
+    """
+    async with _new_client(proxy=proxy, timeout=timeout) as http:
+        response = await _send(
+            http, "GET", f"{CATALOG_URL}/app-versions/published",
+            params={"lng": "ru", "appVersion": APP_VERSION},
+            headers={"User-Agent": APP_USER_AGENT},
+        )
+    return str(_json(response, "app-versions/published"))
 
 
 # ───────────────────────────── Токен ──────────────────────────────
@@ -741,12 +765,18 @@ class MobileNetSchool:
         self,
         subject_group_ids: Optional[Iterable[int]] = None,
         *,
+        types: Iterable[str] = (),
         period_days: int = 14,
         limit: int = 100,
         offset: int = 0,
         student_id: Optional[int] = None,
     ) -> dict:
-        """Лента «Д/З → События»: новые оценки (``ResultInfo``) и задания (``HomeworkInfo``).
+        """Лента «Д/З → События»: ``{"events": [{"type": …}, …]}``.
+
+        Типы событий: ``ResultInfo`` — оценки, ``HomeworkInfo`` — задания,
+        ``TermTotalInfo``/``YearTotalInfo`` — итоговые за период и за год.
+        ``types`` оставляет только нужные; без него сервер отдаёт все вперемешку,
+        и задания могут вытеснить оценки за ``limit``.
 
         Без ``subject_group_ids`` берутся все группы из расписания на ±2 недели.
         """
@@ -761,6 +791,7 @@ class MobileNetSchool:
                 ("limit", limit),
                 ("offset", offset),
                 *(("SubjectGroupId", g) for g in subject_group_ids),
+                *(("Types", t) for t in types),
                 ("PeriodDays", period_days),
             ],
         )
@@ -855,6 +886,58 @@ class MobileNetSchool:
             },
         )
         return _json(response, "mail/messages (send)")
+
+    async def _mail_action(self, path: str, message_ids: Iterable[int], params: Params = ()) -> None:
+        # Мобильное API ждёт id полями multipart-формы ``messageIds``; на
+        # JSON-тело, как у веб-API, отвечает «Не переданы идентификаторы».
+        ids = [("messageIds", (None, str(i))) for i in message_ids]
+        if not ids:
+            return
+        response = await self._request("POST", path, [("userId", self._user_id), *params], files=ids)
+        _raise_for(response, path)
+
+    async def mail_mark_read(self, message_ids: Iterable[int], read: bool = True) -> None:
+        """Пометить письма прочитанными (или непрочитанными при ``read=False``)."""
+        await self._mail_action("/mail/messages/mark-as", message_ids, [("read", str(read).lower())])
+
+    async def mail_delete(self, message_ids: Iterable[int], *, permanent: bool = False) -> None:
+        """Переместить письма в «Удалённые»; ``permanent=True`` — удалить навсегда.
+
+        Навсегда удаляются письма из «Удалённых»: сначала удалите их обычным
+        вызовом.
+        """
+        await self._mail_action("/mail/messages/delete" if permanent else "/mail/messages/moving", message_ids)
+
+    async def mail_restore(self, message_ids: Iterable[int]) -> None:
+        """Вернуть письма из «Удалённых» в папки, где они были."""
+        await self._mail_action("/mail/messages/restore", message_ids)
+
+    async def mail_draft(self, message_id: int, action: str = "reply") -> MailDraft:
+        """Заготовка ответа: ``"reply"``, ``"replyAll"`` (ученикам запрещено) или ``"forward"``."""
+        return MailDraft.from_raw(
+            await self._get(f"/mail/messages/{message_id}/edit", [("userId", self._user_id), ("action", action)])
+        )
+
+    async def recipient(self, user_id: int) -> MailRecipient:
+        """Получатель по числовому id пользователя — например, автора письма."""
+        return MailRecipient.from_raw(
+            await self._get("/address-book/recipients/get-by-userid", [("userId", user_id)])
+        )
+
+    async def mail_block(self, user_id: int) -> None:
+        """Не получать письма от пользователя.
+
+        Сервер принимает запрос (200), но на живом сервере результат не
+        подтверждён: блокировка системной учётки ``admin`` в
+        :meth:`mail_blocked_users` не появилась.
+        """
+        response = await self._request("POST", "/mail/blocked-users", [("userId", self._user_id), ("authorId", user_id)])
+        _raise_for(response, "mail/blocked-users")
+
+    async def mail_unblock(self, user_id: int) -> None:
+        """Снять блокировку :meth:`mail_block`."""
+        response = await self._request("DELETE", "/mail/blocked-users", [("userId", self._user_id), ("authorId", user_id)])
+        _raise_for(response, "mail/blocked-users")
 
     async def mail_blocked_users(self) -> List[dict]:
         return await self._get("/mail/blocked-users", [("userId", self._user_id)])
@@ -1033,8 +1116,8 @@ class MobileNetSchool:
         *,
         attachments: Sequence[Tuple[str, bytes]] = (),
         timeout: Optional[float] = None,
-    ) -> None:
-        """Отправить письмо, при необходимости с файлами ``[(имя, содержимое), …]``.
+    ) -> int:
+        """Отправить письмо, при необходимости с файлами ``[(имя, содержимое), …]``, и вернуть его ID.
 
         Приложение дописывает к тексту подпись — мы не дописываем. Файлы
         загружаются до отправки; если загрузка одного из них не удалась,
@@ -1043,7 +1126,8 @@ class MobileNetSchool:
         if not to:
             raise exceptions.NetSchoolError("Не указан получатель письма")
         ids = [await self.upload_attachment(name, data) for name, data in attachments]
-        await self.mail_send_raw(subject, text, to, attachment_ids=ids)
+        sent = await self.mail_send_raw(subject, text, to, attachment_ids=ids)
+        return int(sent["messageId"])
 
     async def mobile_token(self, *, client_secret: Optional[str] = None) -> MobileToken:
         if self._token is None:
