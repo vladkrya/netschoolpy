@@ -343,6 +343,18 @@ class AssignmentDetails(_Model):
 
 # ──────────────────────────── Уроки ──────────────────────────────
 
+def is_elective(lesson: Any) -> bool:
+    """Факультатив: внеурочное занятие или дополнительное образование.
+
+    Принимает сырой ответ API или модель Lesson. Название предмета
+    не определяет его тип; при отсутствии признаков возвращает False.
+    """
+    if isinstance(lesson, dict):
+        return any(lesson.get(key) is True for key in
+                   ("extraActivity", "addEducation", "extra_activity", "add_education"))
+    return getattr(lesson, "extra_activity", False) is True or getattr(lesson, "add_education", False) is True
+
+
 class Lesson(_Model):
     # День урока; в 8.0 уроки создавались и без него.
     day: Optional[datetime.date] = None
@@ -363,6 +375,12 @@ class Lesson(_Model):
     topic: str = ""
     # Отметка посещаемости урока, например «Б».
     absence: str = ""
+    extra_activity: bool = False
+    add_education: bool = False
+
+    @property
+    def is_elective(self) -> bool:
+        return is_elective(self)
 
     @classmethod
     def from_raw(cls, data: dict, type_mapping: Dict[int, dict] | None = None) -> Lesson:
@@ -376,6 +394,8 @@ class Lesson(_Model):
             classmeeting_id=data.get("classmeetingId"),
             is_distance=bool(data.get("isDistanceLesson", False)),
             relay=data.get("relay"),
+            extra_activity=data.get("extraActivity") is True,
+            add_education=data.get("addEducation") is True,
             assignments=[
                 Assignment.from_raw(a, type_mapping)
                 for a in data.get("assignments", [])

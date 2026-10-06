@@ -1153,6 +1153,8 @@ def _lesson_from_mobile(
         teacher=", ".join(t.get("name") or "" for t in meeting.get("teachers") or [] if t.get("name")),
         topic=meeting.get("lessonTheme") or "",
         absence=meeting.get("attendance") or "",
+        extra_activity=meeting.get("extraActivity") is True,
+        add_education=meeting.get("addEducation") is True,
         assignments=[_assignment_from_mobile(a, attachments.get(a["assignmentId"], [])) for a in raw_assignments],
     )
 

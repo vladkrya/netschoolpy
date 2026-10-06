@@ -8,12 +8,36 @@ from urllib.parse import parse_qs
 import httpx
 import pytest
 
-from netschoolpy import MobileNetSchool, published_at
+from netschoolpy import MobileNetSchool, published_at, is_elective
 from netschoolpy.exceptions import LoginError, SessionExpired
 from netschoolpy.mobile import MobileRegion, MobileToken, password_hash
 
 SITE = "https://sgo.example.ru"
 MSK = datetime.timezone(datetime.timedelta(hours=3))
+
+
+@pytest.mark.parametrize("flags,expected", [
+    ({}, False),
+    ({"extraActivity": True}, True),
+    ({"addEducation": True}, True),
+    ({"extraActivity": False, "addEducation": False}, False),
+    ({"extraActivity": None}, False),
+    ({"extraActivity": "false"}, False),
+])
+def test_elective_detection_survives_lesson_conversion(flags, expected):
+    from netschoolpy.mobile import _lesson_from_mobile
+    from netschoolpy.models import Lesson
+
+    raw = {**MEETINGS[0], **flags}
+    lesson = _lesson_from_mobile(raw, [], {})
+    assert is_elective(raw) is expected
+    assert lesson.is_elective is expected
+    assert is_elective(lesson) is expected
+    restored = Lesson.model_validate_json(lesson.model_dump_json())
+    assert restored.is_elective is expected
+    assert is_elective(lesson.model_dump()) is expected
+    web = Lesson.from_raw({**raw, "number": 1, "startTime": "08:00", "endTime": "08:40"})
+    assert web.is_elective is expected
 
 USERS = [{
     "id": 42, "nickName": "Иванов Иван", "isStudent": True, "isParent": False, "children": None,

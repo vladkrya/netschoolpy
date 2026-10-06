@@ -291,6 +291,18 @@ await ns.portfolios(); await ns.portfolio(id); await ns.download_portfolio_doc(i
 await ns.token_endpoints()
 ```
 
+Факультативы определяются по признакам сервера `extraActivity` (внеурочная
+деятельность) и `addEducation` (дополнительное образование), без анализа названия:
+
+```python
+from netschoolpy import is_elective
+
+is_elective(await ns.classmeeting(classmeeting_id))  # сырой ответ API
+for day in (await ns.diary()).schedule:
+    for lesson in day.lessons:
+        print(lesson.subject, lesson.is_elective)
+```
+
 Каталог регионов приложения — без авторизации: `await netschoolpy.list_mobile_regions()`, `await netschoolpy.get_mobile_region(server_id)`. Последняя версия приложения в каталоге — `await netschoolpy.published_app_version()`. Токен можно продлить через `await ns.refresh()`.
 
 ## Исключения
