@@ -31,6 +31,7 @@ from netschoolpy.models import (
     Assignment,
     AssignmentDetails,
     AssignmentType,
+    BellTime,
     Attachment,
     Diary,
     LoginMethods,
@@ -2492,6 +2493,16 @@ class NetSchool:
             "grade/assignment/types", params={"all": include_inactive}, timeout=timeout,
         )
         return [AssignmentType.from_raw(t) for t in resp.json()]
+
+    async def bell_schedule(self, *, timeout: int | None = None) -> List[BellTime]:
+        """Расписание звонков школы (``schedule/times``) по дням недели и сменам.
+
+        Сервер отдаёт все варианты расписания звонков школы; если их несколько,
+        различайте по :attr:`BellTime.variant_id`.
+        """
+        resp = await self._authed_get("schedule/times", timeout=timeout)
+        bells = [BellTime.from_raw(t) for t in resp.json()]
+        return sorted(bells, key=lambda b: (b.weekday, b.shift, b.number))
 
     async def my_settings(self, *, timeout: int | None = None) -> dict:
         """Сырой ``mysettings``: профиль и настройки пользователя.

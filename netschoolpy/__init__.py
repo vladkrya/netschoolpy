@@ -15,6 +15,7 @@ from .models import (
     AssignedMark,
     AssignmentDetails,
     AssignmentType,
+    BellTime,
     Teacher,
     LoginMethods,
     MailDraft,
@@ -46,7 +47,7 @@ from .mobile import get_region as get_mobile_region
 from .mobile import list_regions as list_mobile_regions
 from .regions import REGIONS, get_url, list_regions
 
-__version__ = "9.4.3"
+__version__ = "9.5.0"
 
 __all__ = [
     "is_elective",
@@ -66,6 +67,7 @@ __all__ = [
     "AssignedMark",
     "AssignmentDetails",
     "AssignmentType",
+    "BellTime",
     "Teacher",
     "LoginMethods",
     "MailDraft",

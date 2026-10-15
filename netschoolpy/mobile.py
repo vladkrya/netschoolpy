@@ -51,6 +51,7 @@ from .models import (
     AssignmentDetails,
     Attachment,
     Author,
+    BellTime,
     Day,
     Diary,
     Lesson,
@@ -657,7 +658,8 @@ class MobileNetSchool:
 
     async def _request(
         self, method: str, path: str, params: Optional[Params] = None, *,
-        json_body: Any = None, files: Any = None,
+        json_body: Any = None, files: Any = None, content: Optional[bytes] = None,
+        headers: Optional[Dict[str, str]] = None,
     ) -> httpx.Response:
         query: Params = [*(params or []), ("lng", "ru"), ("appVersion", APP_VERSION)]
         extra: Dict[str, Any] = {}
@@ -665,6 +667,10 @@ class MobileNetSchool:
             extra["json"] = json_body
         if files is not None:
             extra["files"] = files
+        if content is not None:
+            extra["content"] = content
+        if headers:
+            extra["headers"] = headers
         return await _send(self._http, method, path, params=query, **extra)
 
     async def _get(self, path: str, params: Optional[Params] = None) -> Any:
@@ -953,6 +959,131 @@ class MobileNetSchool:
         """Настройки push: ``Homework``, ``Result``, ``TermTotal``, ``YearTotal``."""
         return await self._get("/v2/push-notifications/settings")
 
+    async def set_push_settings(self, settings: Union[Dict[str, bool], Iterable[dict]]) -> None:
+        """Включить или выключить push: ``{"Homework": False}`` или список из :meth:`push_settings`.
+
+        Приложение шлёт JSON-список ``[{"code", "enabled"}]``, и сервер заменяет
+        им весь набор: не названные в списке коды пропадают (проверено на живом
+        сервере). Поэтому словарь накладывается на текущие настройки, а список
+        отправляется как есть. На уведомления бота настройки не влияют.
+        """
+        if isinstance(settings, dict):
+            current = {s["code"]: s["enabled"] for s in await self.push_settings()}
+            items = {**current, **settings}.items()
+        else:
+            items = [(s["code"], s["enabled"]) for s in settings]
+        body = [{"code": code, "enabled": bool(enabled)} for code, enabled in items]
+        response = await self._request("POST", "/v2/push-notifications/settings", json_body=body)
+        _raise_for(response, "v2/push-notifications/settings")
+
+    # ── ответ на задание ────────────────────────────────────
+
+    async def set_answer_text(self, assignment_id: int, text: str, student_id: Optional[int] = None) -> None:
+        """Записать текстовый ответ на задание; пустой ``text`` стирает ответ.
+
+        Тело — сам текст (``text/plain``), как в приложении. Ответ сразу виден
+        учителю. Можно ли отвечать, говорит ``canAnswer`` в
+        :meth:`current_term_assignments`.
+        """
+        response = await self._request(
+            "POST", f"/assignments/{assignment_id}/answer/text", [("studentId", self._sid(student_id))],
+            content=text.encode(), headers={"Content-Type": "text/plain; charset=utf-8"},
+        )
+        _raise_for(response, "answer/text")
+
+    async def upload_answer_file(
+        self, assignment_id: int, name: str, data: bytes, *,
+        description: str = "", content_type: Optional[str] = None, student_id: Optional[int] = None,
+    ) -> Any:
+        """Приложить файл к ответу на задание (multipart-поле ``file``).
+
+        Описание приложение передаёт параметром запроса и обрезает до 255 символов.
+        """
+        params: Params = [("studentId", self._sid(student_id))]
+        if description.strip():
+            params.append(("description", description.strip()[:255]))
+        mime = content_type or mimetypes.guess_type(name)[0] or "application/octet-stream"
+        response = await self._request(
+            "POST", f"/assignments/{assignment_id}/answer/files", params, files={"file": (name, data, mime)},
+        )
+        _raise_for(response, "answer/files (upload)")
+        try:
+            return response.json()
+        except ValueError:
+            return None
+
+    async def delete_answer_file(self, assignment_id: int, attachment_id: int, student_id: Optional[int] = None) -> None:
+        """Убрать файл из ответа на задание (id — из :meth:`assignment_answer`)."""
+        response = await self._request(
+            "DELETE", f"/assignments/{assignment_id}/answer/files",
+            [("studentId", self._sid(student_id)), ("attachmentId", attachment_id)],
+        )
+        _raise_for(response, "answer/files (delete)")
+
+    # ── дистанционные уроки ─────────────────────────────────
+
+    async def distance_meetings(self, distance_meeting_ids: Iterable[int], student_id: Optional[int] = None) -> List[dict]:
+        """Дистанционные уроки по id (``distanceMeetingId`` из :meth:`classmeetings`)."""
+        ids = list(distance_meeting_ids)
+        if not ids:
+            return []
+        response = await self._request(
+            "POST", "/distancemeetings/get-batch", [("studentId", self._sid(student_id))],
+            json_body={"distanceMeetingId": ids},
+        )
+        return _json(response, "distancemeetings/get-batch")
+
+    async def distance_meeting_join(self, distance_meeting_id: int, student_id: Optional[int] = None) -> Any:
+        """Данные для входа на дистанционный урок (сервер обращается к шлюзу ВКС)."""
+        return await self._get(f"/distancemeetings/{distance_meeting_id}/join", [("studentId", self._sid(student_id))])
+
+    # ── события и справки ───────────────────────────────────
+
+    async def events(
+        self, *, page: int = 1, page_size: int = 50,
+        start: Optional[date] = None, end: Optional[date] = None, student_id: Optional[int] = None,
+    ) -> dict:
+        """Мероприятия ученика (олимпиады, конкурсы): ``{"page", "totalItems", "items": […]}``.
+
+        Это не лента оценок — она в :meth:`period_events`.
+        """
+        params: Params = [("studentId", self._sid(student_id)), ("page", page), ("pageSize", page_size)]
+        if start:
+            params.append(("startDate", start.isoformat()))
+        if end:
+            params.append(("endDate", end.isoformat()))
+        return await self._get("/v2/events", params)
+
+    async def download_event_file(self, event_id: int, file_id: int) -> bytes:
+        return await self._download(f"/v2/events/{event_id}/files/{file_id}")
+
+    async def parent_reference_types(self, student_id: Optional[int] = None) -> List[dict]:
+        """Виды справок, которые можно заказать в школе (только для родителей: ученику — 403)."""
+        return await self._get("/parent-references/ref-types", [("studentId", self._sid(student_id))])
+
+    async def order_parent_reference(self, reference_type_id: int, student_id: Optional[int] = None) -> Any:
+        """Заказать справку вида ``reference_type_id`` (из :meth:`parent_reference_types`).
+
+        Заказ уходит в школу по-настоящему.
+        """
+        response = await self._request(
+            "POST", "/parent-references",
+            json_body={
+                "studentId": self._sid(student_id),
+                "schoolId": self._school_id,
+                "referenceTypeId": reference_type_id,
+            },
+        )
+        _raise_for(response, "parent-references")
+        try:
+            return response.json()
+        except ValueError:
+            return None
+
+    async def address_book_organizations(self) -> List[dict]:
+        """Организации адресной книги (на ``sgo.e-mordovia.ru`` маршрута пока нет — 404)."""
+        return await self._get("/address-book-organizations", [("userId", self._user_id)])
+
     async def portfolios(self) -> List[dict]:
         return await self._get("/portfolios")
 
@@ -1019,6 +1150,31 @@ class MobileNetSchool:
                 for d, ls in sorted(days.items())
             ],
         )
+
+    async def bell_schedule(
+        self, start: Optional[date] = None, *, timeout: Optional[float] = None,
+    ) -> List[BellTime]:
+        """Расписание звонков, собранное из уроков недели, которая начинается со ``start``.
+
+        Отдельного маршрута у мобильного API нет (``schedule/times`` есть только в
+        веб-API; приложение 2.3.1 тоже строит расписание из уроков), поэтому
+        звонки берутся из ``classmeetings``: в каждом уроке есть
+        номер, смена и время. В результате только те уроки, что стоят у ученика
+        на этой неделе; ``id`` и ``variant_id`` не заполнены.
+        """
+        if not start:
+            start = date.today() - timedelta(days=date.today().weekday())
+        bells: Dict[Tuple[int, int, int], BellTime] = {}
+        for meeting in await self.classmeetings(start, start + timedelta(days=6)):
+            bell = BellTime(
+                weekday=_parse_date(meeting["day"]).isoweekday(),
+                shift=meeting.get("scheduleTimeRelay") or 1,
+                number=meeting.get("scheduleTimeNumber") or 0,
+                start=_parse_datetime(meeting["startTime"]).time(),
+                end=_parse_datetime(meeting["endTime"]).time(),
+            )
+            bells.setdefault((bell.weekday, bell.shift, bell.number), bell)
+        return [bells[k] for k in sorted(bells)]
 
     async def attachments(self, assignment_id: int, *, timeout: Optional[float] = None) -> List[Attachment]:
         return [
@@ -1151,6 +1307,7 @@ def _lesson_from_mobile(
         subject=meeting.get("subjectName") or "",
         classmeeting_id=meeting.get("classmeetingId"),
         is_distance=meeting.get("distanceMeetingId") is not None,
+        distance_meeting_id=meeting.get("distanceMeetingId"),
         relay=meeting.get("scheduleTimeRelay"),
         teacher=", ".join(t.get("name") or "" for t in meeting.get("teachers") or [] if t.get("name")),
         topic=meeting.get("lessonTheme") or "",

@@ -149,6 +149,15 @@ async def test_diary_maps_to_web_models():
     assert await ns.download_attachment_as_bytes(99) == b"DOCX"
 
 
+async def test_bell_schedule_from_classmeetings():
+    ns = await _client()
+    first, second = await ns.bell_schedule(datetime.date(2026, 9, 28))
+    assert (first.weekday, first.shift, first.number) == (1, 1, 1)
+    assert (first.start, first.end) == (datetime.time(8, 30), datetime.time(9, 10))
+    assert (second.shift, second.start) == (2, datetime.time(14, 10))
+    assert first.id is None and first.variant_id is None
+
+
 async def test_mail_compat():
     ns = await _client()
     page = await ns.mail_list()

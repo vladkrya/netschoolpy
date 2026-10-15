@@ -181,9 +181,19 @@ async with NetSchool("https://sgo.example.ru") as ns:
     await ns.download_profile_picture(id, buf)  # аватар пользователя
 
     kinds = await ns.assignment_types()         # типы заданий (ДЗ, К, …)
+    bells = await ns.bell_schedule()            # расписание звонков
     limits = await ns.upload_limits()           # лимиты загрузки файлов, КБ
     settings = await ns.my_settings()           # профиль (личные данные!)
 ```
+
+### Расписание звонков
+
+```python
+for bell in await ns.bell_schedule():
+    print(bell.weekday, bell.shift, bell.number, bell.start, bell.end)
+```
+
+`BellTime.weekday` — ISO (1 — понедельник), `shift` — смена, `number` — номер урока (0 — нулевой урок). Веб-клиент берёт звонки из `schedule/times`: все дни, смены и варианты школы (`variant_id`, `used`). У мобильного API такого маршрута нет, поэтому `MobileNetSchool.bell_schedule(start)` собирает звонки из уроков ученика за неделю, начиная со `start` (по умолчанию текущая неделя).
 
 ### Почта
 
@@ -290,6 +300,24 @@ await ns.announcements_raw(); await ns.push_settings()
 await ns.portfolios(); await ns.portfolio(id); await ns.download_portfolio_doc(id, doc_id)
 await ns.token_endpoints()
 ```
+
+Маршруты приложения 2.3.1 (восстановлены по его коду):
+
+```python
+await ns.set_answer_text(assignment_id, "Ответ")  # текст ответа учителю; "" — стереть
+await ns.upload_answer_file(assignment_id, "решение.pdf", data, description="стр. 1")
+await ns.delete_answer_file(assignment_id, attachment_id)
+await ns.distance_meetings([distance_meeting_id])     # Lesson.distance_meeting_id
+await ns.distance_meeting_join(distance_meeting_id)   # вход на урок через шлюз ВКС
+await ns.events(start=date(2025, 1, 1))               # олимпиады и конкурсы
+await ns.download_event_file(event_id, file_id)
+await ns.parent_reference_types()                     # справки (только родителям)
+await ns.order_parent_reference(reference_type_id)    # заказ уходит в школу
+await ns.set_push_settings({"Homework": False})       # push приложения, не бота
+await ns.address_book_organizations()
+```
+
+`set_push_settings` со словарём накладывает его на текущие настройки: сервер заменяет весь набор, и не названные коды иначе пропали бы.
 
 Факультативы определяются по признакам сервера `extraActivity` (внеурочная
 деятельность) и `addEducation` (дополнительное образование), без анализа названия:

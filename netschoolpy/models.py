@@ -369,6 +369,8 @@ class Lesson(_Model):
     # Идентификатор урока в SGO: по нему связаны задания («classMeetingId»).
     classmeeting_id: Optional[int] = None
     is_distance: bool = False
+    # Дистанционный урок мобильного API: id для :meth:`MobileNetSchool.distance_meeting_join`.
+    distance_meeting_id: Optional[int] = None
     # Номер смены.
     relay: Optional[int] = None
     # Поля ниже заполняет мобильное API; веб-дневник их не отдаёт.
@@ -938,6 +940,37 @@ class AssignmentType(_Model):
             abbr=data.get("abbr") or "",
             order=data.get("order") or 0,
             is_active=data.get("isActive", True),
+        )
+
+
+class BellTime(_Model):
+    """Звонок: время урока с номером ``number`` в смене ``shift``.
+
+    ``weekday`` — как в :meth:`datetime.date.isoweekday` (1 — понедельник).
+    Сервер считает дни с воскресенья (``weekDay`` 1 — воскресенье, 2 —
+    понедельник), модель переводит в ISO. ``number`` 0 бывает у нулевого урока
+    («Разговоры о важном»). ``id`` и ``variant_id`` есть только в веб-API.
+    """
+    weekday: int
+    shift: int
+    number: int
+    start: datetime.time
+    end: datetime.time
+    id: Optional[int] = None
+    variant_id: Optional[int] = None
+    used: bool = True
+
+    @classmethod
+    def from_raw(cls, data: dict) -> BellTime:
+        return cls(
+            weekday=(int(data["weekDay"]) - 2) % 7 + 1,
+            shift=data.get("relay") or 1,
+            number=data.get("number") or 0,
+            start=_parse_datetime(data["startTime"]).time(),
+            end=_parse_datetime(data["endTime"]).time(),
+            id=data.get("id"),
+            variant_id=data.get("variantId"),
+            used=data.get("used", True),
         )
 
 

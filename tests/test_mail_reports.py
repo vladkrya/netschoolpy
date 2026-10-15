@@ -194,6 +194,26 @@ async def test_assignment_types():
     assert seen[0].url.params["all"] == "true"
 
 
+async def test_bell_schedule():
+    # Форма ответа — с живого сервера: weekDay считается с воскресенья.
+    raw = [
+        {"id": 279749, "weekDay": 3, "relay": 1, "number": 1, "variantId": 13445,
+         "startTime": "1900-01-01T08:00:00", "endTime": "1900-01-01T08:40:00", "used": True},
+        {"id": 279738, "weekDay": 2, "relay": 1, "number": 0, "variantId": 13445,
+         "startTime": "1900-01-01T08:00:00", "endTime": "1900-01-01T08:25:00", "used": True},
+        {"id": 279790, "weekDay": 2, "relay": 2, "number": 1, "variantId": 13445,
+         "startTime": "1900-01-01T13:30:00", "endTime": "1900-01-01T14:10:00", "used": False},
+    ]
+    ns, seen = _web(lambda r: httpx.Response(200, json=raw))
+    zero, second_shift, tuesday = await ns.bell_schedule()
+    assert seen[0].url.path == "/webapi/schedule/times"
+    assert (zero.weekday, zero.shift, zero.number) == (1, 1, 0)
+    assert (zero.start, zero.end) == (datetime.time(8, 0), datetime.time(8, 25))
+    assert (zero.id, zero.variant_id) == (279738, 13445)
+    assert (second_shift.shift, second_shift.used) == (2, False)
+    assert tuesday.weekday == 2
+
+
 # ───────────────────────────── Мобильное API ─────────────────────────────
 
 
