@@ -347,6 +347,36 @@ netschoolpy.SessionExpired      # сессия истекла (401)
 netschoolpy.ServerUnavailable   # сервер не ответил
 ```
 
+### Почему не удался вход (9.6.0)
+
+Причину отказа называет класс исключения — разбирать текст не нужно. Все новые
+классы — подклассы `LoginError`, так что `except LoginError` работает как раньше.
+
+| Класс | Когда |
+|---|---|
+| `InvalidCredentials` | школа не приняла логин или пароль (409 на входе) |
+| `ESIAInvalidCredentials` | Госуслуги: `INVALID_PASSWORD`, `INVALID_LOGIN`, `ACCOUNT_NOT_FOUND`; это и `ESIAError`, и `InvalidCredentials` |
+| `AccountLocked` | блокировка за частые попытки («Вы совершили 3 неудачные попытки входа…») — не пускает даже с верным паролем |
+| `ESIAAccountLocked` | Госуслуги: `ACCOUNT_LOCKED`, `CAPTCHA_REQUIRED`; это и `ESIAError`, и `AccountLocked` |
+| `SchoolNotFound` | школа или организация Госуслуг с таким названием не найдена |
+| `LoginRejected` | сервер отказал по другой причине: нет привязанных к Госуслугам пользователей, не выдан `at` или код, IDP-логин не прошёл, `connect/token` отказал; текст сервера — в сообщении |
+| `RefreshTokenRejected` | `refresh()`: identity.ir-tech.ru ответил `invalid_grant` — refresh-токен истёк или отозван; это и `LoginRejected`, и `SessionExpired` |
+| `ServerUnavailable` | обрыв, таймаут, 5xx, 429 или HTML вместо JSON (техработы) во время входа; не `LoginError` |
+
+```python
+try:
+    await ns.login(login, password, school)
+except netschoolpy.InvalidCredentials:
+    ...  # попросить войти заново
+except netschoolpy.ServerUnavailable:
+    ...  # повторить позже
+except netschoolpy.LoginError:
+    ...  # прочие отказы
+```
+
+Ошибки неправильного вызова (пустой логин, нет `client_secret`, неверный индекс
+из `user_callback`, неразборчивые куки или session-store) остаются обычным `LoginError`.
+
 ## Логирование
 
 Библиотека использует стандартный `logging`. Для отладки:

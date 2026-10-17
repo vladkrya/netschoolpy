@@ -45,6 +45,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import httpx
 
 from . import exceptions
+from ._login_errors import conflict_error, conflict_message, status_error
 from .models import (
     Announcement,
     Assignment,
@@ -201,6 +202,19 @@ def _json(response: httpx.Response, what: str) -> Any:
         raise exceptions.NetSchoolError(f"{what}: ответ не JSON") from exc
 
 
+def _login_json(response: httpx.Response, what: str) -> Any:
+    """Как :func:`_json`, но для шагов входа: 5xx и HTML — это недоступность
+    сервера, остальные отказы — :class:`LoginRejected`, а не 401 токена."""
+    if response.is_error:
+        raise status_error(response.status_code, what, response.text)
+    try:
+        return response.json()
+    except ValueError as exc:
+        raise exceptions.ServerUnavailable(
+            f"{what}: сервер ответил не JSON — возможно, идут техработы"
+        ) from exc
+
+
 async def _send(client: httpx.AsyncClient, method: str, url: str, **kwargs: Any) -> httpx.Response:
     try:
         return await client.request(method, url, **kwargs)
@@ -267,8 +281,30 @@ async def _token_request(
             headers={"User-Agent": APP_USER_AGENT},
         )
     if response.status_code in (400, 401):
-        raise exceptions.LoginError(f"identity.ir-tech.ru отказал: {response.text[:200]}")
-    return MobileToken.from_raw(_json(response, "connect/token"))
+        raise _token_error(response, form.get("grant_type", ""))
+    return MobileToken.from_raw(_login_json(response, "connect/token"))
+
+
+def _token_error(response: httpx.Response, grant_type: str) -> exceptions.LoginError:
+    """Отказ ``connect/token``. Пароля в этом запросе нет — значит, и
+    :class:`InvalidCredentials` здесь быть не может.
+
+    ``invalid_grant`` при продлении — refresh_token истёк или отозван:
+    :class:`RefreshTokenRejected` (он же :class:`SessionExpired`). При обмене
+    одноразового кода — код протух или уже использован: :class:`LoginRejected`,
+    повторный вход выдаст новый. ``invalid_client`` — не тот client_secret.
+    """
+    try:
+        body = response.json()
+    except ValueError:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    error = body.get("error") or ""
+    message = f"identity.ir-tech.ru отказал: {response.text[:200]}"
+    if error == "invalid_grant" and grant_type == "refresh_token":
+        return exceptions.RefreshTokenRejected(message)
+    return exceptions.LoginRejected(message)
 
 
 async def exchange_code(
@@ -331,7 +367,7 @@ async def _web_login_code(
     await _send(http, "GET", "/webapi/logindata")
     if isinstance(school, str):
         school = await _resolve_school(http, school)
-    login_state = _json(
+    login_state = _login_json(
         await _send(http, "POST", "/webapi/auth/login-state", data={"mobile": 1}),
         "auth/login-state",
     )
@@ -339,7 +375,11 @@ async def _web_login_code(
     rolegroup: Optional[int] = None
     result: dict = {}
     for _ in range(2):
-        meta = _json(await _send(http, "POST", "/webapi/auth/getdata"), "auth/getdata")
+        meta = _login_json(await _send(http, "POST", "/webapi/auth/getdata"), "auth/getdata")
+        if not isinstance(meta, dict) or "salt" not in meta:
+            raise exceptions.ServerUnavailable(
+                "auth/getdata: в ответе нет salt — возможно, идут техработы"
+            )
         form: Dict[str, Any] = {
             "loginState": login_state,
             "loginType": 1,
@@ -354,12 +394,8 @@ async def _web_login_code(
             form["rolegroup"] = rolegroup
         response = await _send(http, "POST", "/webapi/auth/login", data=form)
         if response.status_code == httpx.codes.CONFLICT:
-            try:
-                message = response.json().get("message")
-            except ValueError:
-                message = None
-            raise exceptions.LoginError(message or "Ошибка авторизации")
-        result = _json(response, "auth/login")
+            raise conflict_error(conflict_message(response))
+        result = _login_json(response, "auth/login")
         if rolegroup is None and "choose-session-role" in (result.get("entryPoint") or ""):
             rolegroup = _pick_role((result.get("accountInfo") or {}).get("userRoles") or [])
             if rolegroup is not None:
@@ -369,7 +405,7 @@ async def _web_login_code(
 
     at = result.get("at")
     if not at:
-        raise exceptions.LoginError(
+        raise exceptions.LoginRejected(
             result.get("errorMessage") or result.get("message") or "Нет токена"
         )
     http.headers["at"] = at
@@ -386,15 +422,15 @@ async def _web_login_code(
 
 
 async def _pincode(http: httpx.AsyncClient, path: str) -> str:
-    data = _json(await _send(http, "GET", path), "mysettings/mobile/pincode")
+    data = _login_json(await _send(http, "GET", path), "mysettings/mobile/pincode")
     code = data.get("userCode") if isinstance(data, dict) else None
     if not code:
-        raise exceptions.LoginError("Сервер не выдал код для мобильного входа")
+        raise exceptions.LoginRejected("Сервер не выдал код для мобильного входа")
     return str(code)
 
 
 async def _resolve_school(http: httpx.AsyncClient, name: str) -> int:
-    items = _json(
+    items = _login_json(
         await _send(http, "GET", "/webapi/schools/search", params={"name": name}),
         "schools/search",
     )
@@ -543,7 +579,7 @@ class MobileNetSchool:
     async def _load_profile(self) -> None:
         users = await self.users()
         if not users:
-            raise exceptions.LoginError("Мобильное API не вернуло пользователя")
+            raise exceptions.LoginRejected("Мобильное API не вернуло пользователя")
         self._user = users[0]
         orgs = self._user.get("organizations") or []
         active = next((o for o in orgs if o.get("isActive")), orgs[0] if orgs else {})

@@ -2,10 +2,16 @@
 
 from .client import NetSchool, get_login_methods, get_total_marks, search_schools
 from .exceptions import (
+    AccountLocked,
+    ESIAAccountLocked,
     ESIAError,
+    ESIAInvalidCredentials,
+    InvalidCredentials,
     LoginError,
+    LoginRejected,
     MFAError,
     NetSchoolError,
+    RefreshTokenRejected,
     SchoolNotFound,
     ServerUnavailable,
     SessionExpired,
@@ -47,7 +53,7 @@ from .mobile import get_region as get_mobile_region
 from .mobile import list_regions as list_mobile_regions
 from .regions import REGIONS, get_url, list_regions
 
-__version__ = "9.5.0"
+__version__ = "9.6.0"
 
 __all__ = [
     "is_elective",
@@ -90,6 +96,12 @@ __all__ = [
     "MFAError",
     "ESIAError",
     "SchoolNotFound",
+    "InvalidCredentials",
+    "AccountLocked",
+    "LoginRejected",
+    "ESIAInvalidCredentials",
+    "ESIAAccountLocked",
+    "RefreshTokenRejected",
     "SessionExpired",
     "ServerUnavailable",
     "REGIONS",

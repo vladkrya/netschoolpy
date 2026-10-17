@@ -249,4 +249,8 @@ class HttpSession:
                     "Server error %d for %s",
                     response.status_code, response.url,
                 )
+            if response.is_error:
+                # Хук срабатывает до чтения тела: без этого текст ошибки
+                # (например, «Неправильный пароль» в 409) недоступен.
+                await response.aread()
             response.raise_for_status()

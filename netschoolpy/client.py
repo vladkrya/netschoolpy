@@ -24,6 +24,13 @@ except Exception:  # pragma: no cover - optional runtime dependency
     websockets = None
 
 from netschoolpy import exceptions
+from netschoolpy._login_errors import (
+    conflict_error,
+    conflict_message,
+    esia_failed_error,
+    server_errors,
+    status_error,
+)
 from netschoolpy.http import HttpSession
 from netschoolpy.models import (
     Announcement,
@@ -282,8 +289,25 @@ class NetSchool:
         *,
         timeout: int | None = None,
     ) -> None:
-        """Вход по логину/паролю «Сетевого города»."""
+        """Вход по логину/паролю «Сетевого города».
 
+        :raises InvalidCredentials: школа не приняла логин или пароль.
+        :raises AccountLocked: вход заблокирован за частые попытки.
+        :raises SchoolNotFound: школа с таким названием не найдена.
+        :raises LoginRejected: сервер отказал по другой причине.
+        :raises ServerUnavailable: обрыв, таймаут, 5xx или техработы.
+        """
+        with server_errors("Вход в «Сетевой город»"):
+            await self._login_password(user_name, password, school, timeout=timeout)
+
+    async def _login_password(
+        self,
+        user_name: str,
+        password: str,
+        school: Union[int, str],
+        *,
+        timeout: int | None = None,
+    ) -> None:
         school_id = (
             await self._resolve_school(school, timeout=timeout)
             if isinstance(school, str)
@@ -300,6 +324,10 @@ class NetSchool:
             # Получаем salt для хеширования
             resp = await self._http.post("auth/getdata", timeout=timeout)
             meta = resp.json()
+            if not isinstance(meta, dict) or "salt" not in meta:
+                raise exceptions.ServerUnavailable(
+                    "auth/getdata: в ответе нет salt — возможно, идут техработы"
+                )
             salt = meta.pop("salt")
 
             pw_hash = md5(password.encode("windows-1251")).hexdigest().encode()
@@ -325,13 +353,7 @@ class NetSchool:
                 )
             except httpx.HTTPStatusError as exc:
                 if exc.response.status_code == httpx.codes.CONFLICT:
-                    try:
-                        body = exc.response.json()
-                    except Exception:
-                        raise exceptions.LoginError() from None
-                    raise exceptions.LoginError(
-                        body.get("message", "Ошибка авторизации")
-                    ) from None
+                    raise conflict_error(conflict_message(exc.response)) from None
                 raise
 
             result = resp.json()
@@ -351,7 +373,9 @@ class NetSchool:
             break
 
         if "at" not in result:
-            raise exceptions.LoginError(result.get("message", "Нет токена"))
+            raise exceptions.LoginRejected(
+                result.get("errorMessage") or result.get("message") or "Нет токена"
+            )
 
         self._access_token = result["at"]
         self._http.set_header("at", result["at"])
@@ -525,7 +549,24 @@ class NetSchool:
         user_callback=None,
     ) -> None:
         """Account-info → выбор организации → IDP-логин → инициализация SGO."""
+        # Здесь запросы идут уже к СГО, а не к Госуслугам: обрыв или 5xx —
+        # это недоступность школьного сервера, а не ESIAError.
+        with server_errors("Вход в «Сетевой город» через Госуслуги"):
+            await self._esia_finalize_login_sgo(
+                esia_client, sgo_origin, login_state, school,
+                timeout=timeout, user_callback=user_callback,
+            )
 
+    async def _esia_finalize_login_sgo(
+        self,
+        esia_client: httpx.AsyncClient,
+        sgo_origin: str,
+        login_state: str,
+        school: str | None,
+        *,
+        timeout: int | None = None,
+        user_callback=None,
+    ) -> None:
         # === Account-info ===
         await esia_client.get(f"{sgo_origin}/webapi/logindata")
 
@@ -533,6 +574,8 @@ class NetSchool:
             f"{sgo_origin}/webapi/sso/esia/account-info",
             params={"loginState": login_state},
         )
+        if r.status_code >= 500:
+            raise status_error(r.status_code, "sso/esia/account-info")
         if r.status_code != 200:
             raise exceptions.ESIAError(
                 f"Не удалось получить account-info: "
@@ -542,7 +585,7 @@ class NetSchool:
         account_info = r.json()
         users = account_info.get("users", [])
         if not users:
-            raise exceptions.LoginError(
+            raise exceptions.LoginRejected(
                 "Нет привязанных пользователей SGO. "
                 "Привяжите аккаунт Госуслуг к Сетевому Городу."
             )
@@ -570,8 +613,10 @@ class NetSchool:
                     "application/x-www-form-urlencoded; charset=UTF-8",
             },
         )
+        if r.status_code >= 500:
+            raise status_error(r.status_code, "IDP-логин в SGO")
         if r.status_code != 200:
-            raise exceptions.LoginError(
+            raise exceptions.LoginRejected(
                 f"IDP-логин в SGO не удался: "
                 f"{r.status_code} {r.text[:300]}"
             )
@@ -579,7 +624,7 @@ class NetSchool:
         auth_result = r.json()
         at = auth_result.get("at", "")
         if not at:
-            raise exceptions.LoginError("SGO не вернул access token (at)")
+            raise exceptions.LoginRejected("SGO не вернул access token (at)")
 
         # === Перенос сессии ===
         self._access_token = at
@@ -682,21 +727,15 @@ class NetSchool:
                 headers=_ESIA_API_HEADERS,
             )
 
-            login_data = login_resp.json()
+            try:
+                login_data = login_resp.json()
+            except ValueError:
+                raise exceptions.ESIAError(
+                    f"Госуслуги ответили не JSON: {login_resp.status_code}"
+                ) from None
 
             if "failed" in login_data:
-                error_code = login_data["failed"]
-                error_messages = {
-                    "INVALID_PASSWORD": "Неверный пароль",
-                    "INVALID_LOGIN": "Неверный логин",
-                    "ACCOUNT_LOCKED": "Аккаунт заблокирован",
-                    "ACCOUNT_NOT_FOUND": "Аккаунт не найден",
-                    "CAPTCHA_REQUIRED": (
-                        "Требуется captcha (слишком много попыток)"
-                    ),
-                }
-                msg = error_messages.get(error_code, error_code)
-                raise exceptions.ESIAError(f"Ошибка ESIA: {msg}")
+                raise esia_failed_error(login_data["failed"])
 
             # === ШАГ 3: обработка ответа (MFA и т.д.) ===
             redirect_url = await self._esia_resolve_login_response(
@@ -720,7 +759,7 @@ class NetSchool:
             )
           except exceptions.ESIAError:
             raise
-          except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout) as exc:
+          except httpx.TransportError as exc:
             raise exceptions.ESIAError(
                 f"Не удалось подключиться к серверу Госуслуг (ESIA): {exc}"
             ) from exc
@@ -886,7 +925,7 @@ class NetSchool:
             )
           except exceptions.ESIAError:
             raise
-          except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout) as exc:
+          except httpx.TransportError as exc:
             raise exceptions.ESIAError(
                 f"Не удалось подключиться к серверу Госуслуг (ESIA): {exc}"
             ) from exc
@@ -1067,7 +1106,7 @@ class NetSchool:
             for idx, lbl in enumerate(labels):
                 if needle in lbl.lower():
                     return users[idx]
-            raise exceptions.LoginError(
+            raise exceptions.SchoolNotFound(
                 f"Организация «{school}» не найдена. "
                 f"Доступные: {', '.join(labels)}"
             )
@@ -2233,7 +2272,7 @@ class NetSchool:
         resp = await self._authed_get("mysettings/mobile/pincode", timeout=timeout)
         code = (resp.json() or {}).get("userCode")
         if not code:
-            raise exceptions.LoginError("Сервер не выдал код для мобильного входа")
+            raise exceptions.LoginRejected("Сервер не выдал код для мобильного входа")
         return await exchange_code(
             str(code), client_secret=client_secret, proxy=self._proxy,
             timeout=float(timeout or 30),
