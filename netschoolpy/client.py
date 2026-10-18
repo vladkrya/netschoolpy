@@ -31,7 +31,7 @@ from netschoolpy._login_errors import (
     server_errors,
     status_error,
 )
-from netschoolpy.http import HttpSession
+from netschoolpy.http import HttpSession, trusted_ssl_context
 from netschoolpy.models import (
     Announcement,
     AssignedMark,
@@ -74,6 +74,14 @@ _ESIA_USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/120.0.0.0 Safari/537.36"
 )
+
+def _certifi_where() -> str | None:
+    try:
+        import certifi
+    except ImportError:  # pragma: no cover - certifi приходит с httpx
+        return None
+    return certifi.where()
+
 
 _ESIA_API_HEADERS: dict[str, str] = {
     "content-type": "application/json",
@@ -162,6 +170,7 @@ class NetSchool:
 
         self._keepalive_task: Optional[asyncio.Task] = None
         self._keepalive_interval: int = 300  # 5 мин
+        self._relogin_lock = asyncio.Lock()
 
     def __repr__(self) -> str:
         return (
@@ -413,10 +422,12 @@ class NetSchool:
 
     @staticmethod
     def _create_esia_ssl_context() -> _ssl.SSLContext:
-        """SSL-контекст для запросов к ESIA (esia.gosuslugi.ru)."""
-        ctx = _ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = _ssl.CERT_NONE
+        """SSL-контекст для запросов к ESIA (esia.gosuslugi.ru).
+
+        Сертификат проверяется: через это соединение идут пароль от
+        Госуслуг и коды подтверждения.
+        """
+        ctx = _ssl.create_default_context(cafile=_certifi_where())
         try:
             ctx.set_ciphers("DEFAULT:@SECLEVEL=1")
         except _ssl.SSLError:
@@ -986,9 +997,7 @@ class NetSchool:
                 cookie_parts.append(f"{cookie.name}={cookie.value}")
         cookie_header = "; ".join(cookie_parts)
 
-        ctx = _ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = _ssl.CERT_NONE
+        ctx = self._create_esia_ssl_context()
 
         reader, writer = await asyncio.open_connection(host, 443, ssl=ctx)
 
@@ -1258,21 +1267,13 @@ class NetSchool:
 
             return await self._handle_esia_post_mfa(esia_client, data, otp_callback=otp_callback)
 
-        elif mfa_type == "PUSH":
+        if mfa_type == "PUSH":
             log.info("Подтвердите вход в приложении Госключ...")
-            data = await self._poll_esia_push(esia_client, login_data)
-            if isinstance(data, str):
-                return data
+            return await self._poll_esia_push(esia_client, login_data)
 
-        else:
-            raise exceptions.MFAError(
-                f"Неизвестный тип MFA: {mfa_type_raw}"
-            )
-
-        if data.get("redirect_url"):
-            return data["redirect_url"]
-
-        return await self._handle_esia_post_mfa(esia_client, data, otp_callback=otp_callback)
+        raise exceptions.MFAError(
+            f"Неизвестный тип MFA: {mfa_type_raw}"
+        )
 
     async def _handle_esia_post_mfa(
         self,
@@ -1392,7 +1393,12 @@ class NetSchool:
             json={"guid": guid},
             headers=_ESIA_API_HEADERS,
         )
-        start_data = r.json() if r.status_code == 200 else {}
+        if r.status_code != 200:
+            raise exceptions.MFAError(
+                f"Не удалось начать проверку безопасности: "
+                f"{r.status_code} {r.text[:300]}"
+            )
+        start_data = r.json()
 
         phone = start_data.get("phone", "***")
         code_len = start_data.get("code_length", 6)
@@ -1422,6 +1428,10 @@ class NetSchool:
             )
 
         result = r.json()
+        if result.get("failed"):
+            raise exceptions.MFAError(
+                f"Неверный код проверки безопасности: {result['failed']}"
+            )
         log.info("Проверка безопасности пройдена!")
 
         redirect_url = result.get("redirect_url")
@@ -1462,16 +1472,18 @@ class NetSchool:
                     headers=_ESIA_API_HEADERS,
                 )
                 data = resp.json()
-                if "redirect_url" in data:
-                    return data["redirect_url"]
-                if "failed" in data:
-                    raise exceptions.MFAError(
-                        f"Push-подтверждение отклонено: {data['failed']}"
-                    )
-            except exceptions.MFAError:
-                raise
-            except Exception:
+            except (httpx.HTTPError, ValueError) as exc:
+                # Сбой одного опроса не повод бросать ожидание.
+                log.debug("Опрос push-подтверждения не удался: %r", exc)
                 continue
+            if not isinstance(data, dict):
+                continue
+            if "redirect_url" in data:
+                return data["redirect_url"]
+            if "failed" in data:
+                raise exceptions.MFAError(
+                    f"Push-подтверждение отклонено: {data['failed']}"
+                )
 
         raise exceptions.MFAError(
             "Время ожидания push-подтверждения истекло"
@@ -1504,8 +1516,15 @@ class NetSchool:
             await asyncio.sleep(self._keepalive_interval)
             try:
                 await self._http.get("context")
-            except Exception:
-                pass
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == httpx.codes.UNAUTHORIZED:
+                    # Сессия уже мертва, пинги её не вернут; перевход
+                    # сделает ближайший запрос через _authed_get/_authed_post.
+                    log.info("keep-alive: сессия истекла, пинги остановлены")
+                    return
+                log.warning("keep-alive: сервер ответил %s", exc.response.status_code)
+            except (httpx.HTTPError, exceptions.ServerUnavailable) as exc:
+                log.warning("keep-alive не прошёл: %r", exc)
 
     def set_keepalive_interval(self, seconds: int) -> None:
         """Установить интервал keep-alive. ``0`` — отключить."""
@@ -1747,37 +1766,43 @@ class NetSchool:
     #  API-методы
     # ═══════════════════════════════════════════════════════════
 
+    async def _relogin(self, stale_token: Optional[str]) -> None:
+        """Войти заново после 401, один раз на все параллельные запросы.
+
+        Если пока ждали блокировку, вход уже сделал другой запрос (токен
+        сменился), второй раз не входим.
+        """
+        if not self._credentials:
+            raise exceptions.SessionExpired("Сессия истекла. Авторизуйтесь заново.")
+        async with self._relogin_lock:
+            if self._access_token == stale_token:
+                await self.login(*self._credentials)
+
     async def _authed_get(
         self, path: str, *, timeout: int | None = None, **kw: Any,
     ) -> httpx.Response:
         """GET с автоматической переавторизацией при 401."""
+        token = self._access_token
         try:
             return await self._http.get(path, timeout=timeout, **kw)
         except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == httpx.codes.UNAUTHORIZED:
-                if self._credentials:
-                    await self.login(*self._credentials)
-                    return await self._http.get(path, timeout=timeout, **kw)
-                raise exceptions.SessionExpired(
-                    "Сессия истекла. Авторизуйтесь заново."
-                ) from None
-            raise
+            if exc.response.status_code != httpx.codes.UNAUTHORIZED:
+                raise
+        await self._relogin(token)
+        return await self._http.get(path, timeout=timeout, **kw)
 
     async def _authed_post(
         self, path: str, *, timeout: int | None = None, **kw: Any,
     ) -> httpx.Response:
         """POST с автоматической переавторизацией при 401."""
+        token = self._access_token
         try:
             return await self._http.post(path, timeout=timeout, **kw)
         except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == httpx.codes.UNAUTHORIZED:
-                if self._credentials:
-                    await self.login(*self._credentials)
-                    return await self._http.post(path, timeout=timeout, **kw)
-                raise exceptions.SessionExpired(
-                    "Сессия истекла. Авторизуйтесь заново."
-                ) from None
-            raise
+            if exc.response.status_code != httpx.codes.UNAUTHORIZED:
+                raise
+        await self._relogin(token)
+        return await self._http.post(path, timeout=timeout, **kw)
 
     @staticmethod
     def _parse_signalr_frames(data: str) -> list[dict[str, Any]]:
@@ -1948,9 +1973,7 @@ class NetSchool:
         ws_url = f"{ws_base}/webapi/signalr/queueHub?at={at}"
 
         cookie_header = "; ".join([f"{k}={v}" for k, v in self._http.client.cookies.items()])
-        ssl_ctx = _ssl.create_default_context()
-        ssl_ctx.check_hostname = False
-        ssl_ctx.verify_mode = _ssl.CERT_NONE
+        ssl_ctx = trusted_ssl_context()
 
         file_id: str | None = None
         async with websockets.connect(  # type: ignore[union-attr]

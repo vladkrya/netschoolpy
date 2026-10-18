@@ -58,7 +58,7 @@ netschoolpy = "netschoolpy.cli:main"
 include = ["netschoolpy*"]
 
 [tool.setuptools.package-data]
-netschoolpy = ["py.typed"]
+netschoolpy = ["py.typed", "certs/*.pem"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
