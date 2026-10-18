@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
+import ssl
+import time
+from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlparse
 
 import httpx
 
@@ -18,16 +23,91 @@ _TOR_TIMEOUT = 30      # секунд (Tor медленнее)
 # SOCKS5-прокси Tor (локальный, поднятый системой)
 _TOR_PROXY = "socks5://127.0.0.1:9050"
 
-# Кэш хостов, для которых прямое соединение не работает → нужен Tor
-_tor_hosts: set[str] = set()
+# Сколько секунд хост после неудачи прямого соединения ходит через Tor.
+_TOR_HOST_TTL = 600
+
+# Повторять при 5xx и таймауте можно только запросы, которые ничего не меняют
+# на сервере: иначе письмо или ответ на задание уйдёт дважды. auth/getdata —
+# POST, но только выдаёт соль для входа.
+_SAFE_POST_PATHS = frozenset({"auth/getdata"})
+
+_RUSSIAN_CA = Path(__file__).resolve().parent / "certs" / "russian_trusted_ca.pem"
+
+
+@functools.cache
+def trusted_ssl_context() -> ssl.SSLContext:
+    """Проверяющий сертификаты контекст: обычные центры плюс центр Минцифры.
+
+    Часть школьных серверов подписана «Russian Trusted Sub CA», которого нет
+    в стандартном наборе.
+    """
+    try:
+        import certifi
+        ctx = ssl.create_default_context(cafile=certifi.where())
+    except ImportError:  # pragma: no cover - certifi приходит с httpx
+        ctx = ssl.create_default_context()
+    ctx.load_verify_locations(cafile=str(_RUSSIAN_CA))
+    return ctx
+
+
+class _ExpiringHostSet(set):
+    """Множество хостов, где пометка сама снимается через ``ttl`` секунд."""
+
+    def __init__(self, ttl: float) -> None:
+        super().__init__()
+        self._ttl = ttl
+        self._added: dict[str, float] = {}
+
+    def add(self, item: str) -> None:
+        self._added[item] = time.monotonic()
+        super().add(item)
+
+    def discard(self, item: str) -> None:
+        self._added.pop(item, None)
+        super().discard(item)
+
+    def clear(self) -> None:
+        self._added.clear()
+        super().clear()
+
+    def __contains__(self, item: object) -> bool:
+        added_at = self._added.get(item)  # type: ignore[arg-type]
+        if added_at is not None and time.monotonic() - added_at > self._ttl:
+            self.discard(item)  # type: ignore[arg-type]
+            return False
+        return super().__contains__(item)
+
+
+# Хосты, для которых прямое соединение не работает → нужен Tor
+_tor_hosts: set[str] = _ExpiringHostSet(_TOR_HOST_TTL)
+
+
+async def _proxy_reachable(proxy_url: str, timeout: float = 1.0) -> bool:
+    parsed = urlparse(proxy_url)
+    if not parsed.hostname or not parsed.port:
+        return False
+    try:
+        _, writer = await asyncio.wait_for(
+            asyncio.open_connection(parsed.hostname, parsed.port), timeout,
+        )
+    except (OSError, asyncio.TimeoutError):
+        return False
+    writer.close()
+    return True
+
+
+def _is_safe(method: str, path: str) -> bool:
+    return method == "GET" or path.strip("/") in _SAFE_POST_PATHS
 
 
 class HttpSession:
     """Тонкая обёртка вокруг ``httpx.AsyncClient``.
 
-    • При ``ReadTimeout`` автоматически повторяет запрос.
-    • При ``ConnectError``/``ConnectTimeout`` — автоматически повторяет
-      через Tor (socks5://127.0.0.1:9050), если он доступен.
+    • При ``ReadTimeout`` и 5xx повторяет только GET: POST мог уже
+      выполниться, повтор отправил бы письмо или ответ дважды.
+    • При ``ConnectError``/``ConnectTimeout`` — повторяет через Tor
+      (socks5://127.0.0.1:9050), если он запущен. Хост ходит через Tor
+      ``_TOR_HOST_TTL`` секунд, потом снова пробуем напрямую.
       Полезно для региональных серверов СГО, блокирующих datacenter IP.
     • Если общий таймаут ``timeout`` исчерпан — бросает ``ServerUnavailable``.
     • ``proxy`` — необязательный SOCKS5/HTTP прокси-URL (например,
@@ -174,6 +254,7 @@ class HttpSession:
     ) -> httpx.Response:
         direct_timeout = timeout if timeout is not None else self._timeout
         max_5xx_retries = 3
+        safe = _is_safe(method, path)
 
         async def _do_request(client: httpx.AsyncClient) -> httpx.Response:
             retry_5xx = 0
@@ -185,10 +266,15 @@ class HttpSession:
                     )
                     return await client.send(req, follow_redirects=follow_redirects)
                 except httpx.ReadTimeout:
+                    if not safe:
+                        raise ServerUnavailable(
+                            "Сервер не ответил вовремя; запрос мог быть выполнен"
+                        ) from None
                     await asyncio.sleep(0.1)
                 except httpx.HTTPStatusError as exc:
                     status = exc.response.status_code
-                    if 500 <= status < 600 and retry_5xx < max_5xx_retries:
+                    if (safe and 500 <= status < 600
+                            and retry_5xx < max_5xx_retries):
                         retry_5xx += 1
                         await asyncio.sleep(0.2 * retry_5xx)
                         continue
@@ -216,30 +302,38 @@ class HttpSession:
                 raise ServerUnavailable(f"Прокси недоступен: {exc}") from exc
 
         # Пробуем прямое соединение
-        connect_failed = False
         try:
             return await asyncio.wait_for(
                 _do_request(self._client), direct_timeout
             )
-        except (httpx.ConnectError, httpx.ConnectTimeout):
-            connect_failed = True
-        except asyncio.TimeoutError:
-            connect_failed = True
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+            reason: BaseException = exc
+        except asyncio.TimeoutError as exc:
+            # Таймаут мог наступить, когда запрос уже ушёл на сервер:
+            # изменяющий запрос через Tor не повторяем.
+            if not safe:
+                raise ServerUnavailable(
+                    "Сервер не ответил вовремя; запрос мог быть выполнен"
+                ) from None
+            reason = exc
 
-        # Прямое не сработало — пробуем через Tor
-        if connect_failed:
-            if self._base_url not in _tor_hosts:
-                log.warning(
-                    "🧅 Direct connection failed for %s, retrying via Tor...",
-                    self._base_url,
-                )
-                _tor_hosts.add(self._base_url)
-            try:
-                return await asyncio.wait_for(
-                    _do_request(self._get_active_client()), _TOR_TIMEOUT
-                )
-            except asyncio.TimeoutError:
-                raise ServerUnavailable("Сервер не ответил (Tor)") from None
+        # Прямое не сработало — пробуем через Tor, если он запущен
+        if not await _proxy_reachable(_TOR_PROXY):
+            raise ServerUnavailable(
+                f"Сервер не отвечает, а Tor ({_TOR_PROXY}) не запущен"
+            ) from reason
+        if self._base_url not in _tor_hosts:
+            log.warning(
+                "🧅 Direct connection failed for %s, retrying via Tor...",
+                self._base_url,
+            )
+            _tor_hosts.add(self._base_url)
+        try:
+            return await asyncio.wait_for(
+                _do_request(self._get_active_client()), _TOR_TIMEOUT
+            )
+        except asyncio.TimeoutError:
+            raise ServerUnavailable("Сервер не ответил (Tor)") from None
 
     @staticmethod
     async def _check_status(response: httpx.Response) -> None:

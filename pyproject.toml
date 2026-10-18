@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "netschoolpy"
-version = "9.6.0"
+version = "9.6.1"
 description = "Асинхронный клиент для «Сетевого города» с поддержкой ЕСИА/Госуслуг, Pydantic v2, SignalR и CLI"
 readme = "README.md"
 license = { text = "GPL-3.0-only" }
@@ -58,7 +58,7 @@ netschoolpy = "netschoolpy.cli:main"
 include = ["netschoolpy*"]
 
 [tool.setuptools.package-data]
-netschoolpy = ["py.typed"]
+netschoolpy = ["py.typed", "certs/*.pem"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
