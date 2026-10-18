@@ -81,6 +81,13 @@ _ESIA_API_HEADERS: dict[str, str] = {
     "referer": "https://esia.gosuslugi.ru/login/",
 }
 
+# Тип MFA из ``mfa_details.type`` → путь проверки кода в ``/aas/oauth2/api/login``.
+_ESIA_MFA_VERIFY_PATHS: dict[str, str] = {
+    "SMS": "otp",
+    "TOTP": "totp",
+    "MAX": "otp-max",
+}
+
 
 def _ask(
     prompt: str,
@@ -1168,7 +1175,7 @@ class NetSchool:
 
         base = "https://esia.gosuslugi.ru/aas/oauth2/api/login"
 
-        if mfa_type in ("SMS", "TOTP", "MAX"):
+        if mfa_type in _ESIA_MFA_VERIFY_PATHS:
             if mfa_type == "SMS":
                 phone = otp_details.get("phone", "***")
                 code_len = otp_details.get("code_length", 6)
@@ -1206,26 +1213,18 @@ class NetSchool:
             if not code:
                 raise exceptions.MFAError("Код подтверждения не введён")
 
-            tried_urls: list[str] = [
-                f"{base}/otp/verify",
-                f"{base}/totp/verify",
-                f"{base}/mfa/verify",
-                f"{base}/otp-max/verify",
-            ]
-            r = None
-            for url in tried_urls:
-                r = await esia_client.post(
-                    url,
-                    params={"code": code},
-                    headers=_ESIA_API_HEADERS,
-                )
-                if r.status_code != 404:
-                    break
-
-            if r is None or r.status_code == 404:
+            # Каждый тип кода проверяет свой endpoint. Перебирать их нельзя:
+            # чужой endpoint отвечает не 404, а ошибкой, и перебор на нём
+            # останавливается, а каждая отправка кода может тратить попытку.
+            url = f"{base}/{_ESIA_MFA_VERIFY_PATHS[mfa_type]}/verify"
+            r = await esia_client.post(
+                url,
+                params={"code": code},
+                headers=_ESIA_API_HEADERS,
+            )
+            if r.status_code == 404:
                 raise exceptions.MFAError(
-                    "Не найден endpoint для верификации MFA-кода. "
-                    f"Попробованные URL: {tried_urls}"
+                    f"Не найден endpoint для верификации MFA-кода ({mfa_type}): {url}"
                 )
             if r.status_code not in (200, 201):
                 raise exceptions.MFAError(
