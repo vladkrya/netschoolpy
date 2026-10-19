@@ -253,7 +253,7 @@ for row in report.tables()[1]:         # таблицы: строки → тек
 - есть **время публикации задания** (`Assignment.published_at`), учитель, тема и посещаемость урока (`Lesson.teacher`, `topic`, `absence`);
 - итоги по всем предметам одним запросом, аналитика по предмету, лента событий, портфолио.
 
-Для получения токена нужен `client_secret` приложения `parent-mobile`: передайте `client_secret=` или задайте `NETSCHOOL_MOBILE_CLIENT_SECRET`. С библиотекой он не поставляется.
+Для получения токена нужен `client_secret` приложения `parent-mobile`. Он встроен в библиотеку; при необходимости его можно переопределить через `client_secret=` или `NETSCHOOL_MOBILE_CLIENT_SECRET`.
 
 ```python
 from netschoolpy import MobileNetSchool, NetSchool, published_at
@@ -374,7 +374,7 @@ except netschoolpy.LoginError:
     ...  # прочие отказы
 ```
 
-Ошибки неправильного вызова (пустой логин, нет `client_secret`, неверный индекс
+Ошибки неправильного вызова (пустой логин, неверный индекс
 из `user_callback`, неразборчивые куки или session-store) остаются обычным `LoginError`.
 
 ## Логирование

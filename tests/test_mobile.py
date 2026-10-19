@@ -234,12 +234,14 @@ async def test_password_login_conflict(monkeypatch):
         await MobileNetSchool(SITE, transport=httpx.MockTransport(handler)).login("u", "p", 7)
 
 
-async def test_login_without_client_secret(monkeypatch):
-    monkeypatch.delenv("NETSCHOOL_MOBILE_CLIENT_SECRET", raising=False)
-    from netschoolpy.mobile import exchange_code
+def test_client_secret_fallback(monkeypatch):
+    from netschoolpy.mobile import CLIENT_SECRET, _client_secret
 
-    with pytest.raises(LoginError, match="client_secret"):
-        await exchange_code("1")
+    monkeypatch.delenv("NETSCHOOL_MOBILE_CLIENT_SECRET", raising=False)
+    assert _client_secret(None) == CLIENT_SECRET
+    monkeypatch.setenv("NETSCHOOL_MOBILE_CLIENT_SECRET", "env")
+    assert _client_secret(None) == "env"
+    assert _client_secret("arg") == "arg"
 
 
 async def test_web_client_mobile_token_uses_pincode(monkeypatch):

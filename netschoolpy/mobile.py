@@ -12,8 +12,8 @@
 Токен получают так же, как приложение: обычный вход в веб-часть, одноразовый
 код из ``/webapi/mysettings/mobile/pincode`` и обмен кода в
 ``identity.ir-tech.ru/connect/token`` (OAuth ``device_code``). Для обмена нужен
-``client_secret`` приложения ``parent-mobile`` — он не поставляется с
-библиотекой: передайте его явно или через переменную окружения
+``client_secret`` приложения ``parent-mobile``; он встроен в библиотеку, но его
+можно переопределить аргументом или переменной окружения
 ``NETSCHOOL_MOBILE_CLIENT_SECRET``.
 
 Пример::
@@ -73,6 +73,7 @@ log = logging.getLogger(__name__)
 APP_VERSION = "2.0.3"
 CLIENT_ID = "parent-mobile"
 CLIENT_SECRET_ENV = "NETSCHOOL_MOBILE_CLIENT_SECRET"
+CLIENT_SECRET = "04064338-13df-4747-8dea-69849f9ecdf0"
 IDENTITY_URL = "https://identity.ir-tech.ru"
 CATALOG_URL = "https://mobile.ir-tech.ru/api/v1/mobile/parent"
 
@@ -166,12 +167,7 @@ def _site_url(url: str) -> str:
 
 
 def _client_secret(value: Optional[str]) -> str:
-    secret = value or os.environ.get(CLIENT_SECRET_ENV, "")
-    if not secret:
-        raise exceptions.LoginError(
-            f"Не задан client_secret мобильного приложения ({CLIENT_SECRET_ENV})"
-        )
-    return secret
+    return value or os.environ.get(CLIENT_SECRET_ENV) or CLIENT_SECRET
 
 
 def _new_client(**kwargs: Any) -> httpx.AsyncClient:
@@ -454,7 +450,7 @@ class MobileNetSchool:
         сразу база API (``…/api/mobile``).
     :param client_secret: секрет приложения ``parent-mobile``; нужен только
         для входа и продления токена. По умолчанию —
-        ``$NETSCHOOL_MOBILE_CLIENT_SECRET``.
+        ``$NETSCHOOL_MOBILE_CLIENT_SECRET``, иначе встроенный.
     """
 
     def __init__(
