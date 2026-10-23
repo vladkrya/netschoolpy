@@ -33,6 +33,10 @@ _REJECT_MARKERS = (
     "запрещен вход", "запрещён вход", "нет прав", "не имеет прав",
     "лицензи", "отключен", "неактивн", "деактив",
 )
+# Слова, по которым видно, что сервер говорит именно о логине или пароле.
+_CREDENTIALS_MARKERS = (
+    "парол", "логин", "имя пользователя", "имени пользователя", "password", "login",
+)
 
 _ESIA_CREDENTIALS = {
     "INVALID_PASSWORD": "Неверный пароль",
@@ -50,8 +54,12 @@ def conflict_error(
 ) -> Union[exceptions.LoginError, exceptions.ServerUnavailable]:
     """Исключение для 409 на ``/webapi/auth/login``.
 
-    Различить причину можно только по тексту ``message``. Если он ни на что
-    не похож, считаем, что не подошёл пароль: так школа отвечает почти всегда.
+    Различить причину можно только по тексту ``message``.
+    :class:`~netschoolpy.exceptions.InvalidCredentials` — только когда сервер
+    прямо сказал, что логин или пароль неверны. Остальное, в том числе пустой
+    ответ, — :class:`~netschoolpy.exceptions.ServerUnavailable`: так школа
+    отвечает, когда у неё лежит база («Ошибка входа в систему»), и пароль
+    тут ни при чём — вход надо повторить позже.
     """
     text = (message or "").strip()
     low = text.lower()
@@ -61,7 +69,11 @@ def conflict_error(
         return exceptions.ServerUnavailable(text)
     if any(m in low for m in _REJECT_MARKERS):
         return exceptions.LoginRejected(text)
-    return exceptions.InvalidCredentials(text or "Неверный логин или пароль")
+    if any(m in low for m in _CREDENTIALS_MARKERS):
+        return exceptions.InvalidCredentials(text)
+    return exceptions.ServerUnavailable(
+        f"вход: сервер отказал без слов о пароле: {text or 'пустой ответ'}"
+    )
 
 
 def conflict_message(response: httpx.Response) -> Optional[str]:

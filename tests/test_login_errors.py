@@ -14,15 +14,25 @@ HTML = "<html><body>Ведутся работы</body></html>"
 CONFLICTS = [
     ("Неправильный пароль или имя пользователя", exceptions.InvalidCredentials),
     ("Неправильный пароль или имя пользователя. Осталось попыток: 2", exceptions.InvalidCredentials),
-    (None, exceptions.InvalidCredentials),
-    ("Что-то новое, чего мы не знаем", exceptions.InvalidCredentials),
+    ("Неправильный пароль или логин", exceptions.InvalidCredentials),  # живой ответ
+    ("Неверное имя пользователя или пароль", exceptions.InvalidCredentials),
+    ("Invalid login or PASSWORD", exceptions.InvalidCredentials),
     ("Вы совершили 3 неудачные попытки входа. Следующая попытка может быть совершена "
      "не ранее чем через минуту", exceptions.AccountLocked),  # живой ответ sgo.e-mordovia.ru
-    ("Неправильный пароль или логин", exceptions.InvalidCredentials),  # тоже живой
     ("Пользователь заблокирован. Повторите попытку через 15 минут", exceptions.AccountLocked),
     ("Превышено количество попыток входа", exceptions.AccountLocked),
+    ("Нет доступа", exceptions.LoginRejected),
     ("Нет доступа к системе", exceptions.LoginRejected),
+    ("Технические работы", exceptions.ServerUnavailable),
     ("Ведутся технические работы", exceptions.ServerUnavailable),
+    # 9.6.2: отказ без слов о логине или пароле — сбой сервера, а не пароль.
+    # «Ошибка входа в систему» — живой ответ, когда у «Сетевого города» упала БД.
+    (None, exceptions.ServerUnavailable),
+    ("", exceptions.ServerUnavailable),
+    ("Ошибка входа в систему", exceptions.ServerUnavailable),
+    ("Произошла ошибка", exceptions.ServerUnavailable),
+    ("Object reference not set to an instance of an object", exceptions.ServerUnavailable),
+    ("Что-то новое, чего мы не знаем", exceptions.ServerUnavailable),
 ]
 
 
@@ -47,6 +57,11 @@ def test_conflict_message_classification(message, expected):
     assert type(error) is expected
     if message:
         assert message in str(error)
+
+
+def test_unclear_conflict_names_server_text():
+    error = conflict_error("Ошибка входа в систему")
+    assert str(error) == "вход: сервер отказал без слов о пароле: Ошибка входа в систему"
 
 
 # ─────────────────────────────── Веб ───────────────────────────────
@@ -75,15 +90,15 @@ def _web_handler(login=None, getdata=None):
 
 @pytest.mark.parametrize("message,expected", CONFLICTS)
 async def test_web_conflict(message, expected):
-    body = {"message": message} if message else {}
+    body = {"message": message} if message is not None else {}
     ns = _web(_web_handler(login=lambda: httpx.Response(409, json=body)))
     with pytest.raises(expected):
         await ns.login("u", "p", 7)
 
 
-async def test_web_conflict_without_json_is_invalid_credentials():
+async def test_web_conflict_without_json_is_server_unavailable():
     ns = _web(_web_handler(login=lambda: httpx.Response(409, text=HTML)))
-    with pytest.raises(exceptions.InvalidCredentials):
+    with pytest.raises(exceptions.ServerUnavailable, match="без слов о пароле"):
         await ns.login("u", "p", 7)
 
 
@@ -252,10 +267,17 @@ def secret(monkeypatch):
 
 @pytest.mark.parametrize("message,expected", CONFLICTS)
 async def test_mobile_conflict(secret, message, expected):
-    body = {"message": message} if message else {}
+    body = {"message": message} if message is not None else {}
     ns = MobileNetSchool(SITE, transport=httpx.MockTransport(
         _mobile_handler(login=lambda: httpx.Response(409, json=body))))
     with pytest.raises(expected):
+        await ns.login("u", "p", 7)
+
+
+async def test_mobile_conflict_without_json_is_server_unavailable(secret):
+    ns = MobileNetSchool(SITE, transport=httpx.MockTransport(
+        _mobile_handler(login=lambda: httpx.Response(409, text=HTML))))
+    with pytest.raises(exceptions.ServerUnavailable, match="без слов о пароле"):
         await ns.login("u", "p", 7)
 
 

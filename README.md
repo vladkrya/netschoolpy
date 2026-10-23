@@ -354,14 +354,14 @@ netschoolpy.ServerUnavailable   # сервер не ответил
 
 | Класс | Когда |
 |---|---|
-| `InvalidCredentials` | школа не приняла логин или пароль (409 на входе) |
+| `InvalidCredentials` | школа прямо сказала, что логин или пароль неверны (409, в тексте есть «пароль», «логин» или «имя пользователя») |
 | `ESIAInvalidCredentials` | Госуслуги: `INVALID_PASSWORD`, `INVALID_LOGIN`, `ACCOUNT_NOT_FOUND`; это и `ESIAError`, и `InvalidCredentials` |
 | `AccountLocked` | блокировка за частые попытки («Вы совершили 3 неудачные попытки входа…») — не пускает даже с верным паролем |
 | `ESIAAccountLocked` | Госуслуги: `ACCOUNT_LOCKED`, `CAPTCHA_REQUIRED`; это и `ESIAError`, и `AccountLocked` |
 | `SchoolNotFound` | школа или организация Госуслуг с таким названием не найдена |
 | `LoginRejected` | сервер отказал по другой причине: нет привязанных к Госуслугам пользователей, не выдан `at` или код, IDP-логин не прошёл, `connect/token` отказал; текст сервера — в сообщении |
 | `RefreshTokenRejected` | `refresh()`: identity.ir-tech.ru ответил `invalid_grant` — refresh-токен истёк или отозван; это и `LoginRejected`, и `SessionExpired` |
-| `ServerUnavailable` | обрыв, таймаут, 5xx, 429 или HTML вместо JSON (техработы) во время входа; не `LoginError` |
+| `ServerUnavailable` | обрыв, таймаут, 5xx, 429 или HTML вместо JSON (техработы) во время входа; с 9.6.2 и 409 без слов о логине или пароле («Ошибка входа в систему», пустой ответ) — так сервер отвечает, когда у него лежит база; не `LoginError` |
 
 ```python
 try:
