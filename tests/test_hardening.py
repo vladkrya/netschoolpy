@@ -3,6 +3,7 @@ keep-alive, перевход и шаги ЕСИА."""
 
 import asyncio
 import ssl
+from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
@@ -207,3 +208,32 @@ _real_sleep = asyncio.sleep
 
 async def _no_sleep(_delay):
     await _real_sleep(0)
+
+
+@pytest.mark.parametrize("payload,expired", [
+    (b'data: {"redirect_url": "https://sgo.example.ru/callback"}\n', False),
+    (b'data: {"error": {"code": "QR_AUTHORIZATION_SESSION_EXPIRED"}}\n', True),
+])
+async def test_qr_poll_is_static_and_verifies_certificates(
+    monkeypatch, payload, expired,
+):
+    """9.6.3: опрос QR — staticmethod, в 9.6.1–9.6.2 он падал на self."""
+    reader = Mock(read=AsyncMock(return_value=payload))
+    writer = Mock(drain=AsyncMock(), wait_closed=AsyncMock())
+    connect = AsyncMock(return_value=(reader, writer))
+    monkeypatch.setattr(asyncio, "open_connection", connect)
+    scanned = AsyncMock()
+    url = "https://esia.gosuslugi.ru/qr-delegate/qr/subscribe/test"
+    async with httpx.AsyncClient() as client:
+        if expired:
+            with pytest.raises(exceptions.ESIAError, match="QR сессия истекла"):
+                await NetSchool._poll_esia_qr_sse(
+                    client, url, scan_callback=scanned)
+        else:
+            result = await NetSchool._poll_esia_qr_sse(
+                client, url, scan_callback=scanned)
+            assert result == {"redirect_url": "https://sgo.example.ru/callback"}
+    scanned.assert_awaited_once()
+    writer.close.assert_called_once()
+    writer.wait_closed.assert_awaited_once()
+    assert connect.call_args.kwargs["ssl"].verify_mode == ssl.CERT_REQUIRED
