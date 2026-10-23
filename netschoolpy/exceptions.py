@@ -22,7 +22,11 @@ class SchoolNotFound(LoginError):
 
 
 class InvalidCredentials(LoginError):
-    """Сервер ответил, что логин или пароль неверны. Нужен вход заново."""
+    """Сервер прямо сказал, что логин или пароль неверны. Нужен вход заново.
+
+    Непонятный отказ без слов о логине или пароле — не этот класс, а
+    :class:`ServerUnavailable` (с 9.6.2).
+    """
 
 
 class AccountLocked(LoginError):
