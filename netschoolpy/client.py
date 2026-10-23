@@ -997,7 +997,7 @@ class NetSchool:
                 cookie_parts.append(f"{cookie.name}={cookie.value}")
         cookie_header = "; ".join(cookie_parts)
 
-        ctx = self._create_esia_ssl_context()
+        ctx = NetSchool._create_esia_ssl_context()
 
         reader, writer = await asyncio.open_connection(host, 443, ssl=ctx)
 
