@@ -53,6 +53,7 @@ Documentation = "https://github.com/vkrya/netschoolpy/tree/main/docs"
 
 [project.scripts]
 netschoolpy = "netschoolpy.cli:main"
+nspy = "netschoolpy.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["netschoolpy*"]
