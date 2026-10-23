@@ -282,6 +282,28 @@ class TestGetTotalMarksHelper:
         result = await get_total_marks("https://example.com", "user", "pass", 1)
         assert result == ["ok"]
 
+    @pytest.mark.asyncio
+    async def test_aexit_keeps_original_error_when_close_fails(self, monkeypatch):
+        async def fake_close(self, *, timeout=None):
+            raise RuntimeError("close failed")
+
+        monkeypatch.setattr(NetSchool, "close", fake_close)
+
+        with pytest.raises(LoginError):
+            async with NetSchool("https://example.com"):
+                raise LoginError("login failed")
+
+    @pytest.mark.asyncio
+    async def test_aexit_raises_close_error_without_original(self, monkeypatch):
+        async def fake_close(self, *, timeout=None):
+            raise RuntimeError("close failed")
+
+        monkeypatch.setattr(NetSchool, "close", fake_close)
+
+        with pytest.raises(RuntimeError, match="close failed"):
+            async with NetSchool("https://example.com"):
+                pass
+
 
 # ═══════════════════════════════════════════════════════════
 #  total marks HTML parser

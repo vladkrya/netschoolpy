@@ -43,7 +43,10 @@ async def async_cmd_diary(args: argparse.Namespace) -> None:
         url = get_url(args.region)
 
     if not url:
-        print("❌ Ошибка: Укажите --url или --region!")
+        if args.region:
+            print(f"❌ Регион '{args.region}' не найден или неоднозначен. Список: netschoolpy regions")
+        else:
+            print("❌ Ошибка: Укажите --url или --region!")
         sys.exit(1)
 
     print(f"🌐 Подключение к {url}...")

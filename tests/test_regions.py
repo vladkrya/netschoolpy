@@ -102,3 +102,6 @@ class TestGetUrl:
     def test_all_regions_findable(self) -> None:
         for name in REGIONS:
             assert get_url(name) == REGIONS[name], f"get_url({name!r}) не нашёл"
+
+    def test_underscores_as_spaces(self) -> None:
+        assert get_url("Республика_Мордовия") == "https://sgo.e-mordovia.ru"

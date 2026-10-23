@@ -66,9 +66,11 @@ def get_url(query: str) -> str | None:
     'https://sgo.edu-74.ru'
     >>> get_url("челябинская")
     'https://sgo.edu-74.ru'
+    >>> get_url("Республика_Мордовия")   # «_» и «-» считаются пробелами
+    'https://sgo.e-mordovia.ru'
     >>> get_url("Респ")          # неоднозначно → None
     """
-    q = query.lower()
+    q = " ".join(query.replace("_", " ").split()).lower()
 
     # 1. Точное совпадение
     for name, url in REGIONS.items():

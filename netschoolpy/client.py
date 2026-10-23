@@ -274,8 +274,14 @@ class NetSchool:
     async def __aenter__(self) -> NetSchool:
         return self
 
-    async def __aexit__(self, *exc: Any) -> None:
-        await self.close()
+    async def __aexit__(self, exc_type: Any, *exc: Any) -> None:
+        try:
+            await self.close()
+        except Exception:
+            # Не подменяем исходную ошибку ошибкой выхода из сессии
+            if exc_type is None:
+                raise
+            log.debug("Ошибка при закрытии сессии", exc_info=True)
 
     # ═══════════════════════════════════════════════════════════
     #  Авторизация по логину/паролю SGO
@@ -2888,8 +2894,10 @@ class NetSchool:
 
     async def close(self, *, timeout: int | None = None) -> None:
         """Завершить сессию и закрыть HTTP-клиент."""
-        await self.logout(timeout=timeout)
-        await self._http.close()
+        try:
+            await self.logout(timeout=timeout)
+        finally:
+            await self._http.close()
 
 
 # ═══════════════════════════════════════════════════════════
