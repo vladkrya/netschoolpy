@@ -56,10 +56,11 @@ netschoolpy = "netschoolpy.cli:main"
 nspy = "netschoolpy.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["netschoolpy*"]
+include = ["netschoolpy*", "myschoolpy*"]
 
 [tool.setuptools.package-data]
 netschoolpy = ["py.typed"]
+myschoolpy = ["py.typed"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
