@@ -13,12 +13,16 @@ import asyncio
 import datetime as dt
 import json
 import ssl
+import time
 from typing import Any, Awaitable, Callable, Iterable, Mapping, Optional
 
 import httpx
 
 from . import _esia, exceptions
 from .models import Homework, Lesson, Mark, Student
+
+# За сколько секунд до конца токена его пора обновить.
+REFRESH_MARGIN = 300
 
 BASE_URL = "https://www.gosuslugi.ru"
 API = "/api/myschool"
@@ -90,6 +94,7 @@ class MySchool:
         self._timeout = timeout
         self._bearer: _esia.Tokens | None = None
         self._flow_transport: httpx.AsyncBaseTransport | None = None  # для тестов
+        self._refresh_lock = asyncio.Lock()
         self._keepalive_interval = keepalive_interval
         self._on_update = on_session_update
         self._on_expired = on_session_expired
@@ -150,16 +155,42 @@ class MySchool:
         """
         if not esia_login or not esia_password:
             raise exceptions.LoginError("Логин и пароль не могут быть пустыми")
-        async with httpx.AsyncClient(
+        async with self._flow_client() as flow_http:
+            tokens = await _esia.mobile_login(flow_http, esia_login, esia_password, otp_callback)
+        await self._use_bearer(tokens)
+
+    def _flow_client(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(
             headers={"user-agent": _esia.USER_AGENT, "accept": "application/json"},
             follow_redirects=False,
             verify=self._ssl_context,
             proxy=self._proxy,
             timeout=self._timeout,
             transport=self._flow_transport,
-        ) as flow_http:
-            tokens = await _esia.mobile_login(flow_http, esia_login, esia_password, otp_callback)
-        await self._use_bearer(tokens)
+        )
+
+    async def refresh_session(self) -> None:
+        """Обновляет токен по ``refresh_token`` (мобильный вход).
+
+        Вызывается сам: перед запросом, если токен на исходе, и после 401.
+
+        :raises SessionExpired: токен обновить нельзя, нужен новый вход.
+        """
+        stale = self._bearer
+        if stale is None:
+            raise exceptions.SessionExpired("Вход не мобильный: обновлять нечего")
+        async with self._refresh_lock:
+            if self._bearer is not stale:
+                return  # пока ждали замок, токен уже обновил другой запрос
+            async with self._flow_client() as flow_http:
+                fresh = await _esia.refresh_tokens(flow_http, stale)
+            self._bearer = fresh
+            self._http.headers["authorization"] = f"Bearer {fresh.access_token}"
+        await self._notify(self._on_update, self.export_session())
+
+    def _token_expiring(self) -> bool:
+        expires = self._bearer.expires_at if self._bearer else None
+        return expires is not None and expires - time.time() < REFRESH_MARGIN
 
     async def _use_bearer(self, tokens: "_esia.Tokens") -> None:
         self._clear_auth()
@@ -198,6 +229,7 @@ class MySchool:
                 "access_token": t.access_token,
                 "refresh_token": t.refresh_token,
                 "expires_in": t.expires_in,
+                "issued_at": t.issued_at,
                 "oid": t.oid,
                 "device_id": t.device_id,
                 "instance_id": t.instance_id,
@@ -215,6 +247,7 @@ class MySchool:
                 access_token=parsed["access_token"],
                 refresh_token=parsed.get("refresh_token", ""),
                 expires_in=int(parsed.get("expires_in") or 0),
+                issued_at=float(parsed.get("issued_at") or 0),
                 oid=parsed.get("oid", ""),
                 device_id=parsed.get("device_id", ""),
                 instance_id=parsed.get("instance_id", ""),
@@ -270,10 +303,19 @@ class MySchool:
     # ── низкоуровневые запросы ──────────────────────────────
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
-        try:
-            response = await self._http.request(method, path, **kwargs)
-        except httpx.TransportError as exc:
-            raise exceptions.ServerUnavailable(f"Госуслуги не ответили: {exc}") from exc
+        if self._token_expiring():
+            try:
+                await self.refresh_session()
+            except exceptions.ServerUnavailable:
+                pass  # токен ещё действует несколько минут: пробуем с ним
+        response = await self._send(method, path, **kwargs)
+        if (
+            response.status_code == 401
+            and self._bearer is not None
+            and self._bearer.refresh_token
+        ):
+            await self.refresh_session()  # SessionExpired, если не вышло
+            response = await self._send(method, path, **kwargs)
         status = response.status_code
         if status == 401:
             raise exceptions.SessionExpired("Сессия Госуслуг недействительна (401)")
@@ -286,6 +328,12 @@ class MySchool:
                 f"{path}: HTTP {status} {self._error_text(response)}".strip()
             )
         return response
+
+    async def _send(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
+        try:
+            return await self._http.request(method, path, **kwargs)
+        except httpx.TransportError as exc:
+            raise exceptions.ServerUnavailable(f"Госуслуги не ответили: {exc}") from exc
 
     @staticmethod
     def _error_text(response: httpx.Response) -> str:

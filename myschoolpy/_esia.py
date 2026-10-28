@@ -17,6 +17,7 @@ import hashlib
 import json
 import secrets
 import string
+import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, Union
@@ -103,6 +104,14 @@ class Tokens:
     oid: str = ""
     device_id: str = ""
     instance_id: str = ""
+    issued_at: float = 0.0  # unix-время получения; 0 — неизвестно
+
+    @property
+    def expires_at(self) -> float | None:
+        """Когда access_token перестанет действовать (None — срок неизвестен)."""
+        if not self.issued_at or not self.expires_in:
+            return None
+        return self.issued_at + self.expires_in
 
 
 @dataclass
@@ -376,6 +385,7 @@ async def _exchange(flow: _Flow, fat_code: str) -> Tokens:
         oid=str(data.get("oid", "")),
         device_id=flow.device_id,
         instance_id=flow.instance_id,
+        issued_at=time.time(),
     )
 
 
@@ -398,3 +408,59 @@ async def _save_token(flow: _Flow, tokens: Tokens) -> None:
         })
     except httpx.TransportError:
         pass
+
+
+async def refresh_tokens(http: httpx.AsyncClient, tokens: Tokens) -> Tokens:
+    """Новый ``access_token`` по ``refresh_token``: ``POST aas/oauth2/te``.
+
+    Подтверждено живьём (28.10.2026): работает с подписью ``mobile/sign``,
+    пока access_token ещё действует. Подпись одноразовая, поэтому каждое
+    обновление берёт свою.
+
+    :raises SessionExpired: ЕСИА не приняла refresh_token, нужен новый вход.
+    """
+    if not tokens.refresh_token:
+        raise exceptions.SessionExpired("Нет refresh_token: войдите заново")
+    try:
+        signed = await http.post(
+            f"{PORTAL}/auth-provider/mobile/sign", json={"scope": SCOPE, "client_id": CLIENT_ID}
+        )
+        sign = signed.json() if signed.status_code == 200 else {}
+        if not sign.get("secret"):
+            raise exceptions.ServerUnavailable(f"mobile/sign: HTTP {signed.status_code}")
+        r = await http.post(f"{ESIA}/aas/oauth2/te", data={
+            "client_id": CLIENT_ID,
+            "client_secret": sign["secret"],
+            "timestamp": sign.get("time", ""),
+            "state": sign.get("stateMarker", ""),
+            "grant_type": "refresh_token",
+            "refresh_token": tokens.refresh_token,
+            "token_type": "Bearer",
+            "scope": SCOPE,
+            "redirect_uri": TE_REDIRECT_URI,
+            "instanceId": tokens.instance_id,
+            "terminal_name": TERMINAL_NAME,
+            "terminal_type": TERMINAL_TYPE,
+        })
+    except httpx.TransportError as exc:
+        raise exceptions.ServerUnavailable(f"Госуслуги не ответили: {exc}") from exc
+    if r.status_code >= 500:
+        raise exceptions.ServerUnavailable(f"ЕСИА te: HTTP {r.status_code}")
+    try:
+        data = r.json()
+    except ValueError:
+        data = {}
+    if r.status_code != 200 or not isinstance(data, dict) or not data.get("access_token"):
+        raise exceptions.SessionExpired(
+            f"ЕСИА не обновила токен (HTTP {r.status_code} {r.text[:200]}): войдите заново"
+        )
+    return Tokens(
+        access_token=data["access_token"],
+        # refresh_token мог смениться; если в ответе его нет, остаётся прежний
+        refresh_token=data.get("refresh_token") or tokens.refresh_token,
+        expires_in=int(data.get("expires_in") or tokens.expires_in or 0),
+        oid=str(data.get("oid") or tokens.oid),
+        device_id=tokens.device_id,
+        instance_id=tokens.instance_id,
+        issued_at=time.time(),
+    )

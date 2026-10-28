@@ -238,3 +238,75 @@ async def test_cookie_login_drops_previous_bearer():
     await ms.login_with_cookies("a=1")
     assert json.loads(ms.export_session()) == {"a": "1"}
     assert "authorization" not in ms._http.headers
+
+
+# ── обновление токена по refresh_token ──────────────────────
+
+class Refreshing(Esia):
+    """Портал, которому токен ACCESS протух; после обновления нужен ACCESS2."""
+
+    def __init__(self, *, refresh_ok=True):
+        super().__init__()
+        self.refresh_ok = refresh_ok
+
+    def __call__(self, request):
+        path = request.url.path
+        if path == "/aas/oauth2/te":
+            self.requests.append(request)
+            if not self.refresh_ok:
+                return httpx.Response(400, json={"error": "invalid_grant"})
+            return httpx.Response(200, json={"access_token": "ACCESS2", "refresh_token": "REFRESH2",
+                                             "expires_in": 10800, "oid": "1000"})
+        if path == "/api/myschool/v1/current_year":
+            self.requests.append(request)
+            ok = request.headers.get("authorization") == "Bearer ACCESS2"
+            return httpx.Response(200 if ok else 401, json={"current_year": "2026"})
+        return super().__call__(request)
+
+
+def stored(issued_at=0.0):
+    return json.dumps({"mode": "bearer", "access_token": "ACCESS", "refresh_token": "REFRESH",
+                       "expires_in": 10800, "issued_at": issued_at, "oid": "1000",
+                       "device_id": "d", "instance_id": "i"})
+
+
+async def test_401_triggers_refresh_and_retry():
+    esia = Refreshing()
+    ms = make(esia)
+    updates = []
+    ms._on_update = lambda payload: updates.append(payload)
+    await ms.import_session(stored())
+    assert ms._http.headers["authorization"] == "Bearer ACCESS2"
+    te = parse_qs(esia.sent("/aas/oauth2/te")[0].content.decode())
+    assert te["grant_type"] == ["refresh_token"] and te["refresh_token"] == ["REFRESH"]
+    assert te["redirect_uri"] == ["https://www.gosuslugi.ru/tut-nichego-net"]
+    assert te["client_secret"] == ["SEC"] and te["instanceId"] == ["i"]
+    saved = json.loads(ms.export_session())
+    assert saved["access_token"] == "ACCESS2" and saved["refresh_token"] == "REFRESH2"
+    assert saved["issued_at"] > 0 and updates  # новый токен отдан на сохранение
+
+
+async def test_expiring_token_is_refreshed_before_request():
+    import time
+    esia = Refreshing()
+    ms = make(esia)
+    ms._http.headers["authorization"] = "Bearer ACCESS"
+    from myschoolpy import _esia
+    ms._bearer = _esia.Tokens("ACCESS", "REFRESH", 10800, "1000", "d", "i", issued_at=time.time() - 10700)
+    assert await ms.current_year() == "2026"
+    # запрос сразу ушёл с новым токеном: старый вообще не пробовали
+    years = esia.sent("/api/myschool/v1/current_year")
+    assert [r.headers["authorization"] for r in years] == ["Bearer ACCESS2"]
+
+
+async def test_refresh_rejected_means_login_again():
+    ms = make(Refreshing(refresh_ok=False))
+    with pytest.raises(exceptions.SessionExpired):
+        await ms.import_session(stored())
+
+
+async def test_no_refresh_token_means_login_again():
+    ms = make(Refreshing())
+    data = json.dumps({"mode": "bearer", "access_token": "ACCESS"})
+    with pytest.raises(exceptions.SessionExpired):
+        await ms.import_session(data)
