@@ -22,7 +22,7 @@ from . import _esia, exceptions
 from .models import Homework, Lesson, Mark, Student
 
 # За сколько секунд до конца токена его пора обновить.
-REFRESH_MARGIN = 300
+REFRESH_MARGIN = 600
 
 BASE_URL = "https://www.gosuslugi.ru"
 API = "/api/myschool"
@@ -307,7 +307,7 @@ class MySchool:
             try:
                 await self.refresh_session()
             except exceptions.ServerUnavailable:
-                pass  # токен ещё действует несколько минут: пробуем с ним
+                pass  # токен ещё действует какое-то время: пробуем с ним
         response = await self._send(method, path, **kwargs)
         if (
             response.status_code == 401

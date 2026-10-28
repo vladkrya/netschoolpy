@@ -292,7 +292,7 @@ async def test_expiring_token_is_refreshed_before_request():
     ms = make(esia)
     ms._http.headers["authorization"] = "Bearer ACCESS"
     from myschoolpy import _esia
-    ms._bearer = _esia.Tokens("ACCESS", "REFRESH", 10800, "1000", "d", "i", issued_at=time.time() - 10700)
+    ms._bearer = _esia.Tokens("ACCESS", "REFRESH", 10800, "1000", "d", "i", issued_at=time.time() - 10300)  # осталось ~8 минут, меньше запаса в 10
     assert await ms.current_year() == "2026"
     # запрос сразу ушёл с новым токеном: старый вообще не пробовали
     years = esia.sent("/api/myschool/v1/current_year")
